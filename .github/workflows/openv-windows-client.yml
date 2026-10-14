@@ -63,7 +63,13 @@ jobs:
           $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Include'
           if (-not (Test-Path $sdkRoot)) { throw 'Windows SDK include directory unavailable' }
           $sdk = Get-ChildItem $sdkRoot -Directory |
-            Where-Object { (Test-Path (Join-Path $_.FullName 'um\Windows.h')) -and ($_.Name -match '^10[.]0[.][0-9]+[.]0
+            Where-Object { (Test-Path (Join-Path $_.FullName 'um\Windows.h')) -and ($_.Name -match '^10[.]0[.][0-9]+[.]0$') } |
+            Sort-Object { [version]$_.Name } -Descending |
+            Select-Object -First 1
+          if (-not $sdk) { throw 'No usable Windows SDK found' }
+          "WINDOWS_SDK_VERSION=$($sdk.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Using Windows SDK: $($sdk.Name)"
+      - name: Build client using documented toolchain
         id: build
         continue-on-error: true
         shell: bash
@@ -79,57 +85,6 @@ jobs:
           [[ -f "$MSBUILD" ]] || { echo "Could not locate MSBuild"; exit 1; }
           cd code/build/five
           "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;verbosity=diagnostic'
-      - name: Collect build files and provenance
-        if: always()
-        run: |
-          New-Item -ItemType Directory -Force -Path build-report | Out-Null
-          git rev-parse HEAD | Set-Content build-report/commit.txt
-          Copy-Item submodule-status.txt build-report/submodule-status.txt -ErrorAction SilentlyContinue
-          Get-ChildItem -Path code/bin/five -Recurse -File -ErrorAction SilentlyContinue |
-            Select-Object FullName,Length | Export-Csv build-report/files.csv -NoTypeInformation
-          Copy-Item code/build/five/client-msbuild.log build-report/client-msbuild.log -ErrorAction SilentlyContinue
-          Get-ChildItem -Path code/bin/five/release -ErrorAction SilentlyContinue |
-            Out-String | Set-Content build-report/release-directory.txt
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: openv-win-client-build-report
-          path: build-report/
-          if-no-files-found: warn
-      - name: Upload experimental client binaries
-        if: steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: openv-win-client-experimental
-          path: code/bin/five/release/
-          if-no-files-found: error
-          retention-days: 7
-      - name: Enforce build result
-        if: steps.build.outcome != 'success'
-        run: throw 'OpenV Windows client build failed. Download build-report and inspect client-msbuild.log.'
-) } |
-            Sort-Object { [version]$_.Name } -Descending |
-            Select-Object -First 1
-          if (-not $sdk) { throw 'No usable Windows SDK found' }
-          "WINDOWS_SDK_VERSION=$($sdk.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Using Windows SDK: $($sdk.Name)"
-      - name: Build client using documented toolchain
-        id: build
-        continue-on-error: true
-        shell: bash
-        env:
-          PROGRAM: five
-        run: |
-          set -o pipefail
-          pwsh ./fxd.ps1 get-chrome
-          ./prebuild.cmd
-          pwsh ./fxd.ps1 gen -game five
-          MSBUILD="/c/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Current/Bin/MSBuild.exe"
-          [[ -f "$MSBUILD" ]] || MSBUILD="/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe"
-          [[ -f "$MSBUILD" ]] || { echo "Could not locate MSBuild"; exit 1; }
-          cd code/build/five
-          "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;verbosity=diagnostic'
       - name: Collect build files and provenance
         if: always()
         run: |
