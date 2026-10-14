@@ -20,7 +20,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
           fetch-depth: 1
@@ -98,14 +98,14 @@ jobs:
             Out-String | Set-Content build-report/release-directory.txt
       - name: Upload diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: openv-win-client-build-report
           path: build-report/
           if-no-files-found: warn
       - name: Upload experimental client binaries
         if: steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: openv-win-client-experimental
           path: code/bin/five/release/
