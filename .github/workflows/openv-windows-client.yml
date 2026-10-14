@@ -96,6 +96,37 @@ jobs:
           Copy-Item code/build/five/client-msbuild.log build-report/client-msbuild.log -ErrorAction SilentlyContinue
           Get-ChildItem -Path code/bin/five/release -ErrorAction SilentlyContinue |
             Out-String | Set-Content build-report/release-directory.txt
+      - name: Inventory experimental package
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'code/bin/five/release'
+          if (-not (Test-Path $root)) {
+            '{"status":"missing_release_directory"}' | Set-Content build-report/package-manifest.json
+            exit 0
+          }
+          $resolved = (Resolve-Path $root).Path
+          $files = @(Get-ChildItem $resolved -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($resolved.Length).TrimStart('\','/')
+            [pscustomobject]@{
+              path = $relative.Replace('\','/')
+              bytes = $_.Length
+              sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            }
+          })
+          $executables = @($files | Where-Object { $_.path -match '(?i)[.]exe$' } | Select-Object -ExpandProperty path)
+          $manifest = [pscustomobject]@{
+            source_commit = (git rev-parse HEAD)
+            artifact_root = $root
+            file_count = $files.Count
+            total_bytes = ($files | Measure-Object -Property bytes -Sum).Sum
+            executables = $executables
+            files = $files
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 build-report/package-manifest.json
+          Write-Host "Package: $($files.Count) files; $($executables.Count) EXE files"
+          $executables | ForEach-Object { Write-Host "Executable: $_" }
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v5
