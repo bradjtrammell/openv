@@ -84,7 +84,7 @@ jobs:
           [[ -f "$MSBUILD" ]] || MSBUILD="/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe"
           [[ -f "$MSBUILD" ]] || { echo "Could not locate MSBuild"; exit 1; }
           cd code/build/five
-          "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;verbosity=diagnostic'
+          "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
       - name: Collect build files and provenance
         if: always()
         run: |
@@ -127,6 +127,52 @@ jobs:
           $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 build-report/package-manifest.json
           Write-Host "Package: $($files.Count) files; $($executables.Count) EXE files"
           $executables | ForEach-Object { Write-Host "Executable: $_" }
+      - name: Assess runtime readiness
+        if: always()
+        shell: pwsh
+        run: |
+          $root = 'code/bin/five/release'
+          $checks = [ordered]@{
+            compiled_executable = (Test-Path (Join-Path $root 'FiveM.exe') -PathType Leaf)
+            legitimacy_component = (Test-Path (Join-Path $root 'legitimacy.dll') -PathType Leaf)
+            client_ui = (Test-Path (Join-Path $root 'citizen/ui') -PathType Container)
+            chrome_subprocess = (Test-Path (Join-Path $root 'CitizenFX_SubProcess_chrome.bin') -PathType Leaf)
+          }
+          $result = [ordered]@{
+            source_commit = (git rev-parse HEAD)
+            status = $(if ($checks.Values -contains $false) {'incomplete'} else {'inventory_pass'})
+            note = 'Inventory only; game launch, entitlements, authorized distribution and multiplayer have not been tested.'
+            checks = $checks
+          }
+          $result | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 build-report/runtime-readiness.json
+          $checks.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
+      - name: Stage runtime-only files
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = (Resolve-Path 'code/bin/five/release').Path
+          $destination = Join-Path (Get-Location) 'openv-test-runtime'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          $files = @(Get-ChildItem $source -File -Recurse | Where-Object {
+            $_.Extension -notin @('.pdb','.exp','.lib','.ilk','.ipch','.iobj','.ipdb') -and
+            $_.FullName.Substring($source.Length).TrimStart('\','/') -notmatch '^(dbg[\\/])'
+          })
+          foreach ($file in $files) {
+            $relative = $file.FullName.Substring($source.Length).TrimStart('\','/')
+            $target = Join-Path $destination $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+            Copy-Item -LiteralPath $file.FullName -Destination $target
+          }
+          Write-Host "Staged $($files.Count) runtime files (no compiled debug symbols)."
+      - name: Upload lean runtime candidate
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v5
+        with:
+          name: openv-win-runtime-candidate
+          path: openv-test-runtime/
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v5
