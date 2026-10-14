@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/branding/openv-logo.webp" alt="OpenV logo" width="520">
+</p>
+
 # OpenV
 
 **An experimental, community-focused GTA V multiplayer project.**
