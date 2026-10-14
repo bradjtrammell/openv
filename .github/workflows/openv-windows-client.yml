@@ -51,6 +51,11 @@ jobs:
           where.exe bash
           if (-not (Test-Path 'C:\msys64')) { throw 'MSYS2 required at C:\msys64 (see docs/building.md)' }
           if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) { corepack enable; corepack prepare yarn@1.22.22 --activate }
+      - name: Install Python build prerequisites
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --upgrade 'setuptools>=70,<82' wheel
+          python -c "import distutils; print('distutils available:', distutils.__file__)"
       - name: Build client using documented toolchain
         id: build
         continue-on-error: true
