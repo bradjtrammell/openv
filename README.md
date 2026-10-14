@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/branding/openv-logo.webp" alt="OpenV logo" width="520">
+  <img src="docs/branding/openv-transparent.png" alt="OpenV logo" width="720">
 </p>
 
 # OpenV
