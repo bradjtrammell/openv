@@ -6,6 +6,9 @@ on:
     paths:
       - '.github/workflows/openv-windows-client.yml'
       - 'tools/openv-gaming-pc-preflight.ps1'
+concurrency:
+  group: openv-windows-client-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -16,11 +19,23 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - name: Checkout with submodules
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 1
+      - name: Initialize required submodules with progress
+        shell: bash
+        timeout-minutes: 75
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          git config --global core.longpaths true
+          git config --global submodule.fetchJobs 8
+          git submodule sync --recursive
+          git -c protocol.version=2 submodule update --init --recursive --depth 1 --jobs 8 --progress
+          git submodule status --recursive > submodule-status.txt
       - name: Prepare toolchain
         run: |
           $ErrorActionPreference = 'Stop'
@@ -57,6 +72,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path build-report | Out-Null
           git rev-parse HEAD | Set-Content build-report/commit.txt
+          Copy-Item submodule-status.txt build-report/submodule-status.txt -ErrorAction SilentlyContinue
           Get-ChildItem -Path code/bin/five -Recurse -File -ErrorAction SilentlyContinue |
             Select-Object FullName,Length | Export-Csv build-report/files.csv -NoTypeInformation
           Copy-Item code/build/five/client-msbuild.log build-report/client-msbuild.log -ErrorAction SilentlyContinue
