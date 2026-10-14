@@ -1,6 +1,11 @@
 name: OpenV Windows client build (experimental)
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/openv-windows-client.yml'
+      - 'tools/openv-gaming-pc-preflight.ps1'
 permissions:
   contents: read
 jobs:
