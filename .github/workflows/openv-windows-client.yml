@@ -57,12 +57,13 @@ jobs:
           python -m pip install --upgrade 'setuptools>=70,<82' wheel
           python -c "import distutils; print('distutils available:', distutils.__file__)"
       - name: Select installed Windows SDK
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Include'
-          if (-not (Test-Path $sdkRoot)) { throw "Windows SDK directory not found: $sdkRoot" }
+          if (-not (Test-Path $sdkRoot)) { throw 'Windows SDK include directory unavailable' }
           $sdk = Get-ChildItem $sdkRoot -Directory |
-            Where-Object { $_.Name -match '^10\.0\.\d+\.0
+            Where-Object { (Test-Path (Join-Path $_.FullName 'um\Windows.h')) -and ($_.Name -match '^10[.]0[.][0-9]+[.]0
         id: build
         continue-on-error: true
         shell: bash
@@ -107,12 +108,12 @@ jobs:
       - name: Enforce build result
         if: steps.build.outcome != 'success'
         run: throw 'OpenV Windows client build failed. Download build-report and inspect client-msbuild.log.'
- -and (Test-Path (Join-Path $_.FullName 'um\Windows.h')) } |
+) } |
             Sort-Object { [version]$_.Name } -Descending |
             Select-Object -First 1
-          if (-not $sdk) { throw 'No usable Windows 10/11 SDK was detected' }
+          if (-not $sdk) { throw 'No usable Windows SDK found' }
           "WINDOWS_SDK_VERSION=$($sdk.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Using installed Windows SDK: $($sdk.Name)"
+          Write-Host "Using Windows SDK: $($sdk.Name)"
       - name: Build client using documented toolchain
         id: build
         continue-on-error: true
