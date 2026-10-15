@@ -173,6 +173,19 @@ jobs:
           path: openv-test-runtime/
           if-no-files-found: error
           retention-days: 7
+      - name: Inventory generated UI bundles
+        if: always()
+        shell: pwsh
+        run: |
+          $paths = @('ext/ui-build/data.zip','ext/ui-build/data_big.zip','code/bin/five/release/citizen/ui','code/bin/five/release/citizen/ui.zip')
+          $items = foreach ($path in $paths) {
+            $present = Test-Path -LiteralPath $path
+            $item = if ($present) { Get-Item -LiteralPath $path } else { $null }
+            [pscustomobject]@{ path=$path; present=$present; bytes=$(if ($item -and -not $item.PSIsContainer) { $item.Length } else { $null }) }
+          }
+          @{ note='UI asset inventory only. Bundles may be upstream prebuilt and require redistribution review.'; items=@($items) } |
+            ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 build-report/ui-bundle-inventory.json
+          $items | Format-Table | Out-String | Write-Host
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v5
