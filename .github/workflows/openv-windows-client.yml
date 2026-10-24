@@ -6,6 +6,11 @@ on:
     paths:
       - '.github/workflows/openv-windows-client.yml'
       - 'tools/openv-gaming-pc-preflight.ps1'
+      - 'tools/build_openv_ui.py'
+      - 'tools/audit_openv_runtime.py'
+      - 'ext/ui-build/**'
+      - 'tests/test_openv_ui.py'
+      - 'tests/test_openv_runtime_audit.py'
 concurrency:
   group: openv-windows-client-${{ github.ref }}
   cancel-in-progress: true
@@ -56,6 +61,22 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python -m pip install --upgrade 'setuptools>=70,<82' wheel
           python -c "import distutils; print('distutils available:', distutils.__file__)"
+      - name: Verify first-party root and fallback JavaScript syntax
+        run: |
+          node --check ext/ui-build/data/root.js
+          if ($LASTEXITCODE -ne 0) { throw 'OpenV native root JavaScript failed syntax check' }
+          node --check ext/ui-build/loadscreen-fallback/code.js
+          if ($LASTEXITCODE -ne 0) { throw 'OpenV source-only loadscreen JavaScript failed syntax check' }
+      - name: Test first-party UI packager
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest discover -s tests -p test_openv_ui.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'OpenV UI packaging tests failed' }
+      - name: Test Windows PE/runtime audit
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest discover -s tests -p test_openv_runtime_audit.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'OpenV Windows runtime audit tests failed' }
       - name: Select installed Windows SDK
         shell: pwsh
         run: |
@@ -85,6 +106,23 @@ jobs:
           [[ -f "$MSBUILD" ]] || { echo "Could not locate MSBuild"; exit 1; }
           cd code/build/five
           "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
+      - name: Build and stage first-party OpenV UI
+        id: ui
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmd.exe /d /c 'ext\ui-build\build.cmd five'
+          if ($LASTEXITCODE -ne 0) { throw 'OpenV UI source build failed' }
+          $destination = 'code/bin/five/release/citizen'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Copy-Item -LiteralPath 'ext/ui-build/data.zip' -Destination "$destination/ui.zip" -Force
+          Copy-Item -LiteralPath 'ext/ui-build/data_big.zip' -Destination "$destination/ui-big.zip" -Force
+          python tools/build_openv_ui.py --verify-runtime code/bin/five/release
+          if ($LASTEXITCODE -ne 0) { throw 'Staged OpenV UI failed archive verification' }
+          New-Item -ItemType Directory -Force -Path build-report | Out-Null
+          Copy-Item -LiteralPath 'ext/ui-build/openv-ui-manifest.json' -Destination 'build-report/openv-ui-manifest.json' -Force
       - name: Collect build files and provenance
         if: always()
         run: |
@@ -132,22 +170,38 @@ jobs:
         shell: pwsh
         run: |
           $root = 'code/bin/five/release'
+          $uiReady = $false
+          if (Test-Path (Join-Path $root 'citizen/ui.zip')) {
+            python tools/build_openv_ui.py --verify-runtime $root
+            $uiReady = ($LASTEXITCODE -eq 0)
+          }
           $checks = [ordered]@{
             compiled_executable = (Test-Path (Join-Path $root 'FiveM.exe') -PathType Leaf)
             legitimacy_component = (Test-Path (Join-Path $root 'legitimacy.dll') -PathType Leaf)
-            client_ui = (Test-Path (Join-Path $root 'citizen/ui') -PathType Container)
+            client_ui = $uiReady
             chrome_subprocess = (Test-Path (Join-Path $root 'CitizenFX_SubProcess_chrome.bin') -PathType Leaf)
           }
           $result = [ordered]@{
             source_commit = (git rev-parse HEAD)
-            status = $(if ($checks.Values -contains $false) {'incomplete'} else {'inventory_pass'})
+            status = $(if ($checks.Values -contains $false) {'incomplete'} else {'preliminary_inventory_pass'})
             note = 'Inventory only; game launch, entitlements, authorized distribution and multiplayer have not been tested.'
             checks = $checks
           }
           $result | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 build-report/runtime-readiness.json
           $checks.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
+      - name: Audit Windows runtime binaries, dependencies and UI
+        id: runtime_audit
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/audit_openv_runtime.py --runtime code/bin/five/release --report build-report/runtime-static-audit.json
+          if ($LASTEXITCODE -ne 0) { throw 'OpenV runtime static audit failed; inspect runtime-static-audit.json for missing DLLs, invalid PE files or UI bundles.' }
       - name: Stage runtime-only files
-        if: steps.build.outcome == 'success'
+        id: stage
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.runtime_audit.outcome == 'success'
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -165,8 +219,17 @@ jobs:
             Copy-Item -LiteralPath $file.FullName -Destination $target
           }
           Write-Host "Staged $($files.Count) runtime files (no compiled debug symbols)."
+      - name: Verify staged runtime bytes against audited source
+        id: stage_audit
+        if: steps.stage.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/audit_openv_runtime.py --runtime openv-test-runtime --baseline-report build-report/runtime-static-audit.json --report build-report/staged-runtime-audit.json
+          if ($LASTEXITCODE -ne 0) { throw 'Staged runtime is incomplete or differs from audited source; inspect staged-runtime-audit.json.' }
       - name: Upload lean runtime candidate
-        if: steps.build.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.runtime_audit.outcome == 'success' && steps.stage_audit.outcome == 'success'
         uses: actions/upload-artifact@v5
         with:
           name: openv-win-runtime-candidate
@@ -177,13 +240,13 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $paths = @('ext/ui-build/data.zip','ext/ui-build/data_big.zip','code/bin/five/release/citizen/ui','code/bin/five/release/citizen/ui.zip')
+          $paths = @('ext/ui-build/data.zip','ext/ui-build/data_big.zip','code/bin/five/release/citizen/ui.zip','code/bin/five/release/citizen/ui-big.zip')
           $items = foreach ($path in $paths) {
             $present = Test-Path -LiteralPath $path
             $item = if ($present) { Get-Item -LiteralPath $path } else { $null }
             [pscustomobject]@{ path=$path; present=$present; bytes=$(if ($item -and -not $item.PSIsContainer) { $item.Length } else { $null }) }
           }
-          @{ note='UI asset inventory only. Bundles may be upstream prebuilt and require redistribution review.'; items=@($items) } |
+          @{ note='Source-built first-party UI bundles. Runtime ZIP content is checked by tools/build_openv_ui.py.'; items=@($items) } |
             ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 build-report/ui-bundle-inventory.json
           $items | Format-Table | Out-String | Write-Host
       - name: Upload diagnostics
@@ -194,7 +257,7 @@ jobs:
           path: build-report/
           if-no-files-found: warn
       - name: Upload experimental client binaries
-        if: steps.build.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.runtime_audit.outcome == 'success' && steps.stage_audit.outcome == 'success'
         uses: actions/upload-artifact@v5
         with:
           name: openv-win-client-experimental
@@ -202,5 +265,5 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Enforce build result
-        if: steps.build.outcome != 'success'
-        run: throw 'OpenV Windows client build failed. Download build-report and inspect client-msbuild.log.'
+        if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
+        run: throw 'OpenV Windows build, source-built UI, static dependency audit, or byte-for-byte staged runtime verification failed. Download build-report and inspect diagnostics.'
