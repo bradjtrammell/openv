@@ -82,6 +82,40 @@ jobs:
           sys.path.insert(0, 'tools'); import build_openv_ui as ui;
           ui.verify_archive(Path('build/openv-ui/data.zip'), ui.REQUIRED_MAIN);
           ui.verify_archive(Path('build/openv-ui/data_big.zip'), ())"
+  installed-vc143:
+    # Fast real-runner test: verify actual Microsoft-signed files without
+    # building the game client or uploading any proprietary redistributable.
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Verify locally installed VC143 x64 CRT and publication rollback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
+          if (-not $installation) { throw 'Visual Studio installation unavailable' }
+          $redist = Join-Path $installation 'VC\\Redist\\MSVC'
+          $destination = Join-Path $env:RUNNER_TEMP 'openv-vc143-signature-smoke'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          python tools/stage_msvc_runtime.py --redist-root $redist --runtime $destination --report "$env:RUNNER_TEMP/openv-vc143-signature-report.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Actual installed Microsoft CRT verification failed' }
+          python -c "import json,sys; from pathlib import Path; p=Path(sys.argv[1]); d=json.loads(p.read_text()); assert d['status']=='staged'; assert len(d['signature_evidence'])==4; print('Verified', len(d['signature_evidence']), 'Microsoft-signed DLLs')" "$env:RUNNER_TEMP/openv-vc143-signature-report.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Signature provenance verification failed' }
+      - name: Upload diagnostic JSON only (never redistribute CRT)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: openv-vc143-signature-evidence
+          path: ${{ runner.temp }}/openv-vc143-signature-report.json
+          if-no-files-found: warn
+          retention-days: 7
   browser-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 15

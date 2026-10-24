@@ -3,8 +3,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
+import json
+import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+import stage_msvc_runtime as staging
 from stage_msvc_runtime import REQUIRED_DLLS, StagingError, redist_directories, stage
 from test_openv_runtime_audit import fixture_pe
 
@@ -87,6 +91,71 @@ class StageMSVCTests(unittest.TestCase):
             self.skipTest(str(exc))
         with self.assertRaisesRegex(StagingError, 'complete'):
             stage(self.root, self.runtime, verifier=self.verifier)
+
+    def test_microsoft_organization_accepts_quoted_and_plain_rdn(self):
+        self.assertTrue(staging.microsoft_organization(
+            'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, C=US'))
+        self.assertTrue(staging.microsoft_organization(
+            'CN=Microsoft Corporation, O="Microsoft Corporation", C=US'))
+        self.assertFalse(staging.microsoft_organization(
+            'CN=Microsoft Corporation, O=Impostor LLC, C=US'))
+        self.assertFalse(staging.microsoft_organization(
+            'OU=Microsoft Corporation, O=Impostor LLC, C=US'))
+        self.assertFalse(staging.microsoft_organization(
+            'CN=Microsoft Corporation, O=Microsoft Corporation Spoofed, C=US'))
+
+    def test_authenticode_structured_evidence_and_fail_closed_status(self):
+        subject = 'CN=Microsoft Corporation, O="Microsoft Corporation", C=US'
+        def result(status='Valid', signer=subject, code=0):
+            payload = {'status': status, 'subject': signer, 'signature_type': 'Authenticode',
+                       'status_message': 'Certificate trust could not be verified'}
+            return subprocess.CompletedProcess([], code, stdout=json.dumps(payload), stderr='')
+        with mock.patch.object(staging.sys, 'platform', 'win32'):
+            with mock.patch.object(staging.subprocess, 'run', return_value=result()) as run:
+                evidence = staging.verify_microsoft_signature(self.crt / REQUIRED_DLLS[0])
+                self.assertEqual(evidence['publisher'], 'Microsoft Corporation')
+                self.assertEqual(run.call_args.args[0][0], 'pwsh.exe')
+                self.assertEqual(evidence['status'], 'Valid')
+                self.assertEqual(run.call_args.kwargs['env']['OPENV_MSVC_DLL'],
+                                 str(self.crt / REQUIRED_DLLS[0]))
+            with mock.patch.object(staging.subprocess, 'run', return_value=result('NotSigned')):
+                with self.assertRaisesRegex(StagingError, 'status='):
+                    staging.verify_microsoft_signature(self.crt / REQUIRED_DLLS[0])
+            with mock.patch.object(staging.subprocess, 'run', return_value=result(signer='O=Fake Corp')):
+                with self.assertRaisesRegex(StagingError, 'organization rejected'):
+                    staging.verify_microsoft_signature(self.crt / REQUIRED_DLLS[0])
+            with mock.patch.object(staging.subprocess, 'run', return_value=result(code=1)):
+                with self.assertRaisesRegex(StagingError, 'command failed'):
+                    staging.verify_microsoft_signature(self.crt / REQUIRED_DLLS[0])
+            with mock.patch.object(staging.subprocess, 'run',
+                                   return_value=subprocess.CompletedProcess([], 0, stdout='oops', stderr='')):
+                with self.assertRaisesRegex(StagingError, 'invalid evidence'):
+                    staging.verify_microsoft_signature(self.crt / REQUIRED_DLLS[0])
+
+    def test_rollback_on_second_publication_failure(self):
+        original = staging.os.link
+        count = 0
+        def link(src, dest):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise OSError('simulated publication failure')
+            return original(src, dest)
+        with mock.patch.object(staging.os, 'link', side_effect=link):
+            with self.assertRaisesRegex(OSError, 'publication failure'):
+                stage(self.root, self.runtime, verifier=self.verifier)
+        self.assertEqual(list(self.runtime.iterdir()), [])
+
+    def test_post_publish_mutation_rolls_back_owned_files(self):
+        original = staging.os.link
+        def link(src, dest):
+            original(src, dest)
+            if Path(dest).name == REQUIRED_DLLS[-1]:
+                Path(dest).write_bytes(b'changed')
+        with mock.patch.object(staging.os, 'link', side_effect=link):
+            with self.assertRaisesRegex(StagingError, 'changed during publication'):
+                stage(self.root, self.runtime, verifier=self.verifier)
+        self.assertEqual(list(self.runtime.iterdir()), [])
 
     def test_default_verifier_requires_windows(self):
         if sys.platform == 'win32':
