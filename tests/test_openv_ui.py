@@ -42,8 +42,17 @@ class UIArchiveTests(unittest.TestCase):
             self.assertTrue(set(ui.REQUIRED_MAIN + ui.REQUIRED_LOADSCREEN).issubset(archive.namelist()))
             self.assertIn(b'registerFrameFunction', archive.read('root.js'))
             self.assertIn(b'loadProgress', archive.read('loadscreen/code.js'))
+        expected_main = {name for name in ui.MAIN_FILES if (source / name).is_file()}
+        expected_loadscreen = {
+            'loadscreen/' + path.relative_to(fallback).as_posix()
+            for path in fallback.rglob('*') if path.is_file()
+            and path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'}
+        }
+        with zipfile.ZipFile(self.output / 'data.zip') as archive:
+            self.assertEqual(set(archive.namelist()), expected_main | expected_loadscreen)
         self.assertEqual(ui.verify_archive(self.output / 'data.zip',
-                         ui.REQUIRED_MAIN + ui.REQUIRED_LOADSCREEN)['files'], 9)
+                         ui.REQUIRED_MAIN + ui.REQUIRED_LOADSCREEN)['files'],
+                         len(expected_main | expected_loadscreen))
 
     def test_build_has_required_ui_and_loadscreen(self):
         result = ui.build(self.source, self.output, self.loadscreen)
@@ -160,9 +169,11 @@ class UIArchiveTests(unittest.TestCase):
             ui.build(self.source, self.output, self.loadscreen)
 
     def test_rejects_case_insensitive_collisions(self):
-        (self.loadscreen / 'Index.html').write_text('collision')
+        # A Windows filesystem aliases Index.html and index.html, so creating
+        # both paths is not a portable collision test. Exercise the exact
+        # archive validation boundary with two distinct logical entry names.
         with self.assertRaisesRegex(ui.UIError, 'Case-insensitive duplicate'):
-            ui.build(self.source, self.output, self.loadscreen)
+            ui.validate_entries({'app/index.html': b'a', 'app/Index.html': b'b'}, {})
 
     def test_rejects_oversize_asset(self):
         with (self.loadscreen / 'huge.png').open('wb') as stream:
