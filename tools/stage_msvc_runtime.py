@@ -94,7 +94,8 @@ def verify_microsoft_signature(path: Path) -> dict:
         raise StagingError(f'Authenticode verification unavailable for {path.name}') from exc
     if result.returncode:
         raise StagingError(
-            f'Authenticode verification command failed for {path.name}: exit {result.returncode}'
+            f'Authenticode verification command failed for {path.name}: exit {result.returncode}; ' 
+            f'stderr={result.stderr[:500]!r}'
         )
     try:
         signature = json.loads(result.stdout)
