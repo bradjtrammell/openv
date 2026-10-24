@@ -6,6 +6,8 @@ on:
       - '.github/workflows/openv-ui.yml'
       - 'tools/build_openv_ui.py'
       - 'tools/audit_openv_runtime.py'
+      - 'tools/stage_msvc_runtime.py'
+      - 'tests/test_stage_msvc_runtime.py'
       - 'ext/ui-build/data/**'
       - 'ext/ui-build/build.cmd'
       - 'ext/ui-build/loadscreen/**'
@@ -18,6 +20,8 @@ on:
       - '.github/workflows/openv-ui.yml'
       - 'tools/build_openv_ui.py'
       - 'tools/audit_openv_runtime.py'
+      - 'tools/stage_msvc_runtime.py'
+      - 'tests/test_stage_msvc_runtime.py'
       - 'ext/ui-build/data/**'
       - 'ext/ui-build/build.cmd'
       - 'ext/ui-build/loadscreen/**'
@@ -57,6 +61,8 @@ jobs:
         run: python -m unittest discover -s tests -p test_openv_ui.py -v
       - name: Run Windows runtime and PE parser regression tests
         run: python -m unittest discover -s tests -p test_openv_runtime_audit.py -v
+      - name: Verify VC143 runtime staging and rollback regressions
+        run: python -m unittest discover -s tests -p test_stage_msvc_runtime.py -v
       - name: Build reproducible source UI (without optional loadscreen)
         run: python tools/build_openv_ui.py --source ext/ui-build/data --output build/openv-ui
       - name: Execute actual Windows batch UI builder and validate outputs

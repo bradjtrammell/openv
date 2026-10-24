@@ -105,6 +105,8 @@ class PEImportTests(unittest.TestCase):
 
     def test_os_and_third_party_imports(self):
         self.assertTrue(audit.is_system_dll('kernel32.dll'))
+        for name in ('avrt.dll', 'dwrite.dll', 'pdh.dll', 'windowscodecs.dll'):
+            self.assertTrue(audit.is_system_dll(name), name)
         self.assertTrue(audit.is_system_dll('api-ms-win-core-file-l1-1-0.dll'))
         self.assertFalse(audit.is_system_dll('vcruntime140.dll'))
         self.assertFalse(audit.is_system_dll('libcef.dll'))

@@ -51,14 +51,14 @@ advapi32.dll apphelp.dll authz.dll bcrypt.dll bcryptprimitives.dll cabinet.dll
 cfgmgr32.dll clbcatq.dll comctl32.dll comdlg32.dll combase.dll crypt32.dll
 cryptbase.dll cryptnet.dll cryptui.dll d2d1.dll d3d10.dll d3d11.dll
 d3d12.dll d3d9.dll d3dcompiler_47.dll dbghelp.dll dnsapi.dll dsound.dll
-dwmapi.dll dxgi.dll dxva2.dll fwpuclnt.dll gdi32.dll gdiplus.dll hid.dll
+dwmapi.dll dwrite.dll dxgi.dll dxva2.dll fwpuclnt.dll gdi32.dll gdiplus.dll hid.dll
 imm32.dll iphlpapi.dll kernel32.dll kernelbase.dll mpr.dll msacm32.dll
 msvcrt.dll mscoree.dll ncrypt.dll netapi32.dll normaliz.dll ntdll.dll ole32.dll
 oleacc.dll oleaut32.dll opengl32.dll powrprof.dll propsys.dll psapi.dll
 rasapi32.dll rpcrt4.dll secur32.dll setupapi.dll shell32.dll shcore.dll
 shlwapi.dll user32.dll userenv.dll uxtheme.dll version.dll winhttp.dll
-wininet.dll winmm.dll winspool.drv wintrust.dll wlanapi.dll ws2_32.dll
-wtsapi32.dll ucrtbase.dll xmllite.dll
+wininet.dll winmm.dll windowscodecs.dll winspool.drv wintrust.dll wlanapi.dll ws2_32.dll
+wtsapi32.dll ucrtbase.dll xmllite.dll avrt.dll pdh.dll
 '''.split())
 
 class RuntimeAuditError(ValueError):
