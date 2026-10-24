@@ -53,7 +53,7 @@ cryptbase.dll cryptnet.dll cryptui.dll d2d1.dll d3d10.dll d3d11.dll
 d3d12.dll d3d9.dll d3dcompiler_47.dll dbghelp.dll dnsapi.dll dsound.dll
 dwmapi.dll dxgi.dll dxva2.dll fwpuclnt.dll gdi32.dll gdiplus.dll hid.dll
 imm32.dll iphlpapi.dll kernel32.dll kernelbase.dll mpr.dll msacm32.dll
-msvcrt.dll ncrypt.dll netapi32.dll normaliz.dll ntdll.dll ole32.dll
+msvcrt.dll mscoree.dll ncrypt.dll netapi32.dll normaliz.dll ntdll.dll ole32.dll
 oleacc.dll oleaut32.dll opengl32.dll powrprof.dll propsys.dll psapi.dll
 rasapi32.dll rpcrt4.dll secur32.dll setupapi.dll shell32.dll shcore.dll
 shlwapi.dll user32.dll userenv.dll uxtheme.dll version.dll winhttp.dll
@@ -88,20 +88,28 @@ def pe_imports(data: bytes, role: str) -> set[str]:
     pe = read_u32(data, 0x3c)
     if pe < 0x40 or pe + 24 > len(data) or data[pe:pe+4] != b'PE\0\0':
         raise RuntimeAuditError('invalid PE header offset or signature')
-    if read_u16(data, pe+4) != 0x8664:
+    machine = read_u16(data, pe+4)
+    if machine != 0x8664 and not (role == 'managed' and machine == 0x14c):
         raise RuntimeAuditError('binary is not Windows AMD64')
     count = read_u16(data, pe+6)
     opt_size = read_u16(data, pe+20)
     flags = read_u16(data, pe+22)
     opt = pe + 24
-    if not 1 <= count <= 96 or opt_size < 112 or opt+opt_size+count*40 > len(data):
+    if not 1 <= count <= 96 or opt+opt_size+count*40 > len(data):
         raise RuntimeAuditError('invalid PE section or optional header')
-    if read_u16(data, opt) != 0x20b or not (flags & 0x0002):
-        raise RuntimeAuditError('binary is not an executable PE32+ image')
-    if role != 'either' and bool(flags & 0x2000) != (role == 'dll'):
+    magic = read_u16(data, opt)
+    if machine == 0x8664 and magic == 0x20b:
+        directory_base, count_offset = 112, 108
+    elif role == 'managed' and machine == 0x14c and magic == 0x10b:
+        directory_base, count_offset = 96, 92
+    else:
+        raise RuntimeAuditError('binary is not an executable Windows AMD64 image')
+    if opt_size < directory_base or not (flags & 0x0002):
+        raise RuntimeAuditError('invalid PE optional header or executable flags')
+    if role != 'either' and bool(flags & 0x2000) != (role in ('dll', 'managed')):
         raise RuntimeAuditError('PE DLL/executable role mismatch')
-    directory_count = read_u32(data, opt+108)
-    if directory_count > 16 or opt_size < 112+min(directory_count, 16)*8:
+    directory_count = read_u32(data, opt+count_offset)
+    if directory_count > 16 or opt_size < directory_base+min(directory_count, 16)*8:
         raise RuntimeAuditError('invalid PE data-directory bounds')
     sections = []
     for i in range(count):
@@ -133,12 +141,35 @@ def pe_imports(data: bytes, role: str) -> set[str]:
             raise RuntimeAuditError('invalid imported DLL name')
         return name
 
+    if role == 'managed':
+        # AnyCPU CLR2 libraries use IMAGE_FILE_MACHINE_I386 even on an x64
+        # client. Accept them only with a complete, file-backed ECMA-335
+        # metadata root and IL-only CLR header. Native x86 code stays banned.
+        if directory_count <= 14:
+            raise RuntimeAuditError('managed assembly missing CLR directory')
+        cli_rva = read_u32(data, opt+directory_base+14*8)
+        cli_size = read_u32(data, opt+directory_base+14*8+4)
+        if cli_size < 72 or cli_size > 4096:
+            raise RuntimeAuditError('invalid managed CLR header size')
+        cli = locate(cli_rva, cli_size)
+        cb = read_u32(data, cli)
+        flags_cli = read_u32(data, cli+16)
+        metadata_rva = read_u32(data, cli+8)
+        metadata_size = read_u32(data, cli+12)
+        if cb < 72 or cb > cli_size or flags_cli & 1 == 0 or flags_cli & (0x2 | 0x10 | 0x20000):
+            raise RuntimeAuditError('managed assembly is not platform-neutral IL-only')
+        if metadata_size < 16 or metadata_size > MAX_PE_BYTES:
+            raise RuntimeAuditError('invalid managed metadata size')
+        metadata = locate(metadata_rva, metadata_size)
+        if data[metadata:metadata+4] != b'BSJB':
+            raise RuntimeAuditError('invalid managed metadata signature')
+
     result: set[str] = set()
     def parse_table(index: int, entry_size: int, name_field: int) -> None:
         if directory_count <= index:
             return
-        table_rva = read_u32(data, opt+112+index*8)
-        table_size = read_u32(data, opt+116+index*8)
+        table_rva = read_u32(data, opt+directory_base+index*8)
+        table_size = read_u32(data, opt+directory_base+index*8+4)
         if table_rva == 0 and table_size == 0:
             return
         if not table_rva or table_size < entry_size or table_size > MAX_IMPORTS*entry_size:
@@ -258,7 +289,11 @@ def audit(root: Path, baseline: dict | None = None) -> dict:
         if path.stat().st_size > MAX_PE_BYTES:
             report.setdefault('binary_errors', []).append({'path': path.relative_to(root).as_posix(), 'error': 'PE image too large'})
             continue
-        role = 'dll' if key.endswith('.dll') else 'either' if key.endswith('.bin') else 'exe'
+        # CLR2 managed assemblies are PE32 AnyCPU IL, not AMD64 native DLLs.
+        # Limit the exception to the documented first-party Mono assembly
+        # tree, and still require a valid CLR header and metadata root.
+        managed = key.startswith('citizen/clr2/lib/mono/4.5/') and key.endswith('.dll')
+        role = 'managed' if managed else 'dll' if key.endswith('.dll') else 'either' if key.endswith('.bin') else 'exe'
         try:
             data = path.read_bytes()
             if hashlib.sha256(data).hexdigest() != manifest[key]['sha256']:
