@@ -8,6 +8,8 @@ on:
       - 'tools/openv-gaming-pc-preflight.ps1'
       - 'tools/build_openv_ui.py'
       - 'tools/audit_openv_runtime.py'
+      - 'tools/stage_msvc_runtime.py'
+      - 'tests/test_stage_msvc_runtime.py'
       - 'ext/ui-build/**'
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_runtime_audit.py'
@@ -77,6 +79,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python -m unittest discover -s tests -p test_openv_runtime_audit.py -v
           if ($LASTEXITCODE -ne 0) { throw 'OpenV Windows runtime audit tests failed' }
+      - name: Test VC143 redistributable staging
+        run: |
+          python -m unittest discover -s tests -p test_stage_msvc_runtime.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'VC143 staging security tests failed' }
       - name: Select installed Windows SDK
         shell: pwsh
         run: |
@@ -123,6 +129,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Staged OpenV UI failed archive verification' }
           New-Item -ItemType Directory -Force -Path build-report | Out-Null
           Copy-Item -LiteralPath 'ext/ui-build/openv-ui-manifest.json' -Destination 'build-report/openv-ui-manifest.json' -Force
+      - name: Stage signed installed VC143 x64 redistributable
+        id: msvc
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path build-report | Out-Null
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
+          if (-not $installation) { throw 'Visual Studio installation not found for VC143 redistributable' }
+          $redist = Join-Path $installation 'VC\Redist\MSVC'
+          python tools/stage_msvc_runtime.py --redist-root $redist --runtime code/bin/five/release --report build-report/msvc-runtime-provenance.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Microsoft-signed VC143 x64 runtime staging failed' }
       - name: Collect build files and provenance
         if: always()
         run: |
@@ -191,7 +211,7 @@ jobs:
           $checks.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
       - name: Audit Windows runtime binaries, dependencies and UI
         id: runtime_audit
-        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.msvc.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -265,5 +285,5 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Enforce build result
-        if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
+        if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.msvc.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
         run: throw 'OpenV Windows build, source-built UI, static dependency audit, or byte-for-byte staged runtime verification failed. Download build-report and inspect diagnostics.'
