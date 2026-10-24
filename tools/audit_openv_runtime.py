@@ -292,7 +292,13 @@ def audit_manifest(manifest: dict) -> dict:
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get('path'), str):
             raise RuntimeAuditError('invalid manifest file entry')
-        names.add(entry['path'].replace('\\', '/').casefold())
+        relative = entry['path'].replace('\\', '/')
+        if not relative or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/')):
+            raise RuntimeAuditError('invalid manifest file path')
+        key = relative.casefold()
+        if key in names:
+            raise RuntimeAuditError(f'Windows case-insensitive file collision: {relative}')
+        names.add(key)
     missing = [name for name in REQUIRED_FILES if name.casefold() not in names]
     return {'audit': 'openv-windows-runtime-manifest-v1', 'status': 'incomplete' if missing else 'manifest_only',
             'missing_required': missing, 'files': len(names), 'execution_verified': False,

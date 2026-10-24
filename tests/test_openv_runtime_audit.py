@@ -162,9 +162,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('ui_error', result)
 
     def test_case_collision_fails(self):
-        (self.root / 'fivem.EXE').write_bytes(fixture_pe())
+        # Windows aliases fivem.EXE to FiveM.exe, so exercise collision
+        # detection on logical manifest paths on every platform.
         with self.assertRaisesRegex(audit.RuntimeAuditError, 'collision'):
-            audit.audit(self.root)
+            audit.audit_manifest({'files': [{'path': 'FiveM.exe'}, {'path': 'fivem.EXE'}]})
+        # A case-sensitive filesystem can additionally exercise the runtime
+        # directory scanner with two genuinely distinct files.
+        if sys.platform != 'win32':
+            (self.root / 'fivem.EXE').write_bytes(fixture_pe())
+            with self.assertRaisesRegex(audit.RuntimeAuditError, 'collision'):
+                audit.audit(self.root)
 
     def test_symlink_fails(self):
         try:
