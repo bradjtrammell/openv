@@ -19,6 +19,6 @@ if exist "%LOADSCREEN%\package.json" (
   popd
   set "COMPILED=%LOADSCREEN%\dist"
 )
-python "%ROOT%..\..\tools\build_openv_ui.py" --source "%ROOT%data" --loadscreen-dist "%COMPILED%" --output "%ROOT%"
+python "%ROOT%..\..\tools\build_openv_ui.py" --source "%ROOT%data" --loadscreen-dist "%COMPILED%" --output "%ROOT%."
 if errorlevel 1 exit /b 1
 exit /b 0

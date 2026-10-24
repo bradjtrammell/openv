@@ -59,6 +59,17 @@ jobs:
         run: python -m unittest discover -s tests -p test_openv_runtime_audit.py -v
       - name: Build reproducible source UI (without optional loadscreen)
         run: python tools/build_openv_ui.py --source ext/ui-build/data --output build/openv-ui
+      - name: Execute actual Windows batch UI builder and validate outputs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+          cmd.exe /d /c ext\ui-build\build.cmd five
+          if ($LASTEXITCODE -ne 0) { throw 'Windows UI batch build failed' }
+          python -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools'); import build_openv_ui as ui; ui.verify_archive(Path('ext/ui-build/data.zip'), ui.REQUIRED_MAIN + ui.REQUIRED_LOADSCREEN); ui.verify_archive(Path('ext/ui-build/data_big.zip'), ())"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows UI batch archives failed verification' }
       - name: Verify source archive entries
         run: >-
           python -c "import sys; from pathlib import Path;

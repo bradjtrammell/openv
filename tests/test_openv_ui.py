@@ -218,5 +218,16 @@ class UIArchiveTests(unittest.TestCase):
             self.assertNotIn('secret.txt', archive.namelist())
 
 
+    def test_windows_batch_output_path_does_not_end_with_separator(self):
+        # %~dp0 always ends in a backslash. In the Windows C runtime argument
+        # parser, a trailing backslash inside double quotes escapes the quote,
+        # handing Python a literal quotation mark in its output path.
+        batch = (MODULE_PATH.parents[1] / 'ext' / 'ui-build' / 'build.cmd').read_text(encoding='utf-8')
+        self.assertIn('--output "%ROOT%."', batch)
+        self.assertNotIn('--output "%ROOT%"', batch)
+        self.assertIn('if errorlevel 1 exit /b 1', batch)
+
+
+
 if __name__ == '__main__':
     unittest.main()
