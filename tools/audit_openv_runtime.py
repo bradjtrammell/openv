@@ -33,6 +33,10 @@ REQUIRED_FILES = (
     'citizen/ui.zip',
     'citizen/ui-big.zip',
 )
+# CEF loads resources dynamically; PE import closure alone cannot prove it works.
+# These are the minimum first-party browser runtime assets required by CEF 103.
+CEF_REQUIRED_FILES = ('icudtl.dat', 'cef.pak', 'cef_100_percent.pak',
+                      'cef_200_percent.pak', 'locales/en-US.pak', 'CEF-LICENSE.txt')
 MAX_FILES = 20000
 MAX_RUNTIME_BYTES = 12 * (1 << 30)
 MAX_PE_BYTES = 512 * (1 << 20)
@@ -267,9 +271,12 @@ def audit(root: Path, baseline: dict | None = None) -> dict:
             raise RuntimeAuditError('runtime file count or byte budget exceeded')
         manifest[key] = {'bytes': size, 'sha256': sha256_file(path)}
     missing = [name for name in REQUIRED_FILES if name.casefold() not in files]
+    missing_cef = ([name for name in CEF_REQUIRED_FILES if name.casefold() not in files]
+                   if 'libcef.dll' in files else [])
     report: dict = {'audit': 'openv-windows-runtime-static-v1',
                     'status': 'incomplete', 'files': len(files), 'total_bytes': total,
-                    'missing_required': missing, 'binaries': [], 'unresolved_imports': [],
+                    'missing_required': missing, 'missing_cef_runtime': missing_cef,
+                    'binaries': [], 'unresolved_imports': [],
                     'ui': None, 'file_manifest': manifest, 'execution_verified': False, 'gameplay_verified': False}
     if not missing:
         try:
@@ -311,7 +318,7 @@ def audit(root: Path, baseline: dict | None = None) -> dict:
             report['unresolved_imports'].append({'path': path.relative_to(root).as_posix(), 'dlls': unresolved})
     if baseline is not None:
         report['staging_integrity'] = compare_staging(baseline, manifest)
-    if (not missing and report['ui'] and not report.get('binary_errors') and
+    if (not missing and not missing_cef and report['ui'] and not report.get('binary_errors') and
             not report['unresolved_imports'] and
             (baseline is None or report['staging_integrity']['status'] == 'pass')):
         report['status'] = 'static_inventory_pass'
