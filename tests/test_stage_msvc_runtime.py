@@ -57,6 +57,14 @@ class StageMSVCTests(unittest.TestCase):
             stage(self.root, self.runtime, verifier=fail)
         self.assertEqual(list(self.runtime.iterdir()), [])
 
+    def test_rejects_mutation_between_read_and_signature_verification(self):
+        def mutate(path):
+            if path.name == REQUIRED_DLLS[0]:
+                path.write_bytes(fixture_pe(dll=True) + b'mutated')
+        with self.assertRaisesRegex(StagingError, 'changed during signature'):
+            stage(self.root, self.runtime, verifier=mutate)
+        self.assertEqual(list(self.runtime.iterdir()), [])
+
     def test_never_overwrites_existing_dll(self):
         (self.runtime / REQUIRED_DLLS[0]).write_bytes(b'original')
         with self.assertRaisesRegex(StagingError, 'overwrite'):
