@@ -47,6 +47,25 @@ def fixture_pe(*, dll=False, imports=(), delay_imports=(), machine=0x8664, termi
     return bytes(data)
 
 
+
+def fixture_managed_pe(*, flags=1, metadata=b'BSJB', machine=0x14c, clr=True):
+    """Synthetic PE32 AnyCPU CLR2 DLL with file-backed ECMA-335 metadata."""
+    data = bytearray(fixture_pe(dll=True, machine=machine))
+    opt = 0x98
+    struct.pack_into('<H', data, opt, 0x10b if machine == 0x14c else 0x20b)
+    if machine == 0x14c:
+        struct.pack_into('<I', data, opt+108, 0)
+        struct.pack_into('<I', data, opt+92, 16)
+    directory = opt + (96 if machine == 0x14c else 112)
+    if clr:
+        struct.pack_into('<II', data, directory+14*8, 0x1400, 72)
+        struct.pack_into('<I', data, 0x600, 72)
+        struct.pack_into('<II', data, 0x608, 0x1500, 32)
+        struct.pack_into('<I', data, 0x610, flags)
+        data[0x700:0x704] = metadata
+    return bytes(data)
+
+
 class PEImportTests(unittest.TestCase):
     def test_normal_and_delay_imports(self):
         pe = fixture_pe(imports=('KERNEL32.dll', 'vcruntime140.dll'), delay_imports=('LIBCEF.DLL',))
@@ -200,6 +219,45 @@ class RuntimeTests(unittest.TestCase):
     def test_cfx_subprocess_bin_may_have_dll_characteristic(self):
         (self.root / 'CitizenFX_SubProcess_chrome.bin').write_bytes(fixture_pe(dll=True))
         self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
+
+
+    def test_clr2_anycpu_il_is_accepted_only_in_managed_tree(self):
+        managed = self.root / 'citizen/clr2/lib/mono/4.5/MsgPack.dll'
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        managed.write_bytes(fixture_managed_pe())
+        self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
+        managed.write_bytes(fixture_managed_pe(machine=0x8664))
+        self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
+        (self.root / 'untrusted.dll').write_bytes(fixture_managed_pe())
+        result = audit.audit(self.root)
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertTrue(any(e['path'] == 'untrusted.dll' for e in result['binary_errors']))
+
+    def test_clr2_managed_exception_requires_valid_il_metadata(self):
+        managed = self.root / 'citizen/clr2/lib/mono/4.5/ref/MsgPack.dll'
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        for name, kwargs in (
+            ('missing_cli', {'clr': False}),
+            ('native_mixed_mode', {'flags': 0}),
+            ('requires_x86', {'flags': 3}),
+            ('native_entrypoint', {'flags': 0x11}),
+            ('prefer_32bit', {'flags': 0x20001}),
+            ('invalid_metadata', {'metadata': b'FAKE'}),
+        ):
+            with self.subTest(name=name):
+                managed.write_bytes(fixture_managed_pe(**kwargs))
+                result = audit.audit(self.root)
+                self.assertEqual(result['status'], 'incomplete')
+                self.assertEqual(result['binary_errors'][0]['path'],
+                                 'citizen/clr2/lib/mono/4.5/ref/MsgPack.dll')
+        managed.write_bytes(fixture_managed_pe())
+        self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
+
+    def test_native_x86_binary_remains_rejected(self):
+        (self.root / 'citizen-game-main.dll').write_bytes(fixture_managed_pe())
+        result = audit.audit(self.root)
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertIn('AMD64', result['binary_errors'][0]['error'])
 
     def test_file_manifest_contains_exact_payload_hashes(self):
         import hashlib
