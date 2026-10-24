@@ -68,7 +68,9 @@ def microsoft_organization(subject: str) -> bool:
 def verify_microsoft_signature(path: Path) -> dict:
     """Verify Windows Authenticode trust and the Microsoft publisher identity.
 
-    Use PowerShell 7 to avoid Windows PowerShell 5.1 importing incompatible\n    modules from the hosted runner's PSModulePath. PowerShell returns structured\n    evidence so that an unavailable catalog,
+    Use PowerShell 7 to avoid Windows PowerShell 5.1 importing incompatible
+    modules from the hosted runner's PSModulePath. PowerShell returns structured
+    evidence so that an unavailable catalog,
     untrusted certificate, or unexpected publisher is distinguishable in CI.
     No status other than Valid is accepted.
     """
