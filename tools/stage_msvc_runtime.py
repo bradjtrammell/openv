@@ -68,7 +68,7 @@ def microsoft_organization(subject: str) -> bool:
 def verify_microsoft_signature(path: Path) -> dict:
     """Verify Windows Authenticode trust and the Microsoft publisher identity.
 
-    PowerShell returns structured evidence so that an unavailable catalog,
+    Use PowerShell 7 to avoid Windows PowerShell 5.1 importing incompatible\n    modules from the hosted runner's PSModulePath. PowerShell returns structured\n    evidence so that an unavailable catalog,
     untrusted certificate, or unexpected publisher is distinguishable in CI.
     No status other than Valid is accepted.
     """
@@ -87,7 +87,7 @@ def verify_microsoft_signature(path: Path) -> dict:
     env = dict(os.environ, OPENV_MSVC_DLL=str(path))
     try:
         result = subprocess.run(
-            ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+            ['pwsh.exe', '-NoProfile', '-NonInteractive', '-Command', script],
             env=env, capture_output=True, text=True, timeout=30, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

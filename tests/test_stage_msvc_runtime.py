@@ -113,7 +113,7 @@ class StageMSVCTests(unittest.TestCase):
         with mock.patch.object(staging.sys, 'platform', 'win32'):
             with mock.patch.object(staging.subprocess, 'run', return_value=result()) as run:
                 evidence = staging.verify_microsoft_signature(self.crt / REQUIRED_DLLS[0])
-                self.assertEqual(evidence['publisher'], 'Microsoft Corporation')
+                self.assertEqual(evidence['publisher'], 'Microsoft Corporation')\n                self.assertEqual(run.call_args.args[0][0], 'pwsh.exe')
                 self.assertEqual(evidence['status'], 'Valid')
                 self.assertEqual(run.call_args.kwargs['env']['OPENV_MSVC_DLL'],
                                  str(self.crt / REQUIRED_DLLS[0]))
