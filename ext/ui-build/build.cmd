@@ -1,72 +1,24 @@
 @echo off
-SETLOCAL EnableDelayedExpansion
-
-set GAME=%1
-SET UI_BUNDLE=cfx-ui-%GAME%.zip
-SET UI_BIG_BUNDLE=cfx-ui-%GAME%_big.zip
-
-set URL_FIVE=https://downloads.cfx-services.net/prod/01a0f183-3516-7156-972c-89787889892d/cfx-ui-five.zip
-set URL_FIVE_BIG=https://downloads.cfx-services.net/prod/01a0f183-3c01-7e89-b06a-6a9eaec7f0b9/cfx-ui-five_big.zip
-set URL_RDR3=https://downloads.cfx-services.net/prod/01a0f183-3f76-74a7-8d90-5517865da459/cfx-ui-rdr3.zip
-set URL_RDR3_BIG=https://downloads.cfx-services.net/prod/01a0f183-4330-77ad-83c5-84c55ed879ff/cfx-ui-rdr3_big.zip
-
-if "%GAME%"=="five" (
-    set UI_URL=%URL_FIVE%
-    set UI_BIG_URL=%URL_FIVE_BIG%
-) else if "%GAME%"=="rdr3" (
-    set UI_URL=%URL_RDR3%
-    set UI_BIG_URL=%URL_RDR3_BIG%
-) else (
-    echo Invalid game specified: %GAME%
-    exit /b 1
+setlocal
+set "GAME=%~1"
+if /I not "%GAME%"=="five" if /I not "%GAME%"=="rdr3" (
+  echo OpenV UI: expected game five or rdr3, got "%GAME%" 1>&2
+  exit /b 2
 )
-
-:: check if Yarn exists
-
-where /q yarn || exit /b !ERRORLEVEL!
-
-:: build loading screen
-echo Building loading screen...
-pushd loadscreen
-call yarn || exit /b !ERRORLEVEL!
-call node_modules\.bin\webpack || exit /b !ERRORLEVEL!
-
-echo Copying loadscreen files...
-xcopy /y /e dist\*.* %~dp0\data\loadscreen\ || exit /b !ERRORLEVEL!
-popd
-
-:: make sure no app leftovers
-if exist %~dp0\data\app (
-    rmdir /s /q %~dp0\data\app\
+set "ROOT=%~dp0"
+set "LOADSCREEN=%ROOT%loadscreen"
+set "COMPILED=%ROOT%loadscreen-fallback"
+where python >nul 2>&1 || (echo OpenV UI: Python 3 is required 1>&2 & exit /b 1)
+if exist "%LOADSCREEN%\package.json" (
+  where yarn >nul 2>&1 || (echo OpenV UI: Yarn required for upstream loadscreen 1>&2 & exit /b 1)
+  pushd "%LOADSCREEN%" || exit /b 1
+  call yarn install --frozen-lockfile --non-interactive
+  if errorlevel 1 (popd & exit /b 1)
+  call node_modules\.bin\webpack.cmd --mode production
+  if errorlevel 1 (popd & exit /b 1)
+  popd
+  set "COMPILED=%LOADSCREEN%\dist"
 )
-if exist %~dp0\data_big\app (
-    rmdir /s /q %~dp0\data_big\app\
-)
-
-echo Moving loadscreen large files to data_big...
-mkdir %~dp0\data_big\loadscreen
-move /y %~dp0\data\loadscreen\*.jpg %~dp0\data_big\loadscreen\
-
-powershell -ExecutionPolicy Unrestricted .\make_dates.ps1 %~dp0\data
-powershell -ExecutionPolicy Unrestricted .\make_dates.ps1 %~dp0\data_big
-
-if exist %~dp0\data.zip (
-    del %~dp0\data.zip
-)
-if exist %~dp0\data_big.zip (
-    del %~dp0\data_big.zip
-)
-
-:: download UI bundles
-echo Downloading UI bundle...
-curl.exe -k --fail-with-body -z%UI_BUNDLE% -L -o%UI_BUNDLE% %UI_URL% || exit /b !ERRORLEVEL!
-echo Downloading UI big bundle...
-curl.exe -k --fail-with-body -z%UI_BIG_BUNDLE% -L -o%UI_BIG_BUNDLE% %UI_BIG_URL% || exit /b !ERRORLEVEL!
-
-copy /y %~dp0\%UI_BUNDLE% %~dp0\data.zip || exit /b !ERRORLEVEL!
-copy /y %~dp0\%UI_BIG_BUNDLE% %~dp0\data_big.zip || exit /b !ERRORLEVEL!
-
-%~dp0\..\..\code\tools\ci\7z u -mx=0 %~dp0\data.zip %~dp0\data\* || exit /b !ERRORLEVEL!
-%~dp0\..\..\code\tools\ci\7z u -mx=0 %~dp0\data_big.zip %~dp0\data_big\* || exit /b !ERRORLEVEL!
-
-exit /B 0
+python "%ROOT%..\..\tools\build_openv_ui.py" --source "%ROOT%data" --loadscreen-dist "%COMPILED%" --output "%ROOT%"
+if errorlevel 1 exit /b 1
+exit /b 0

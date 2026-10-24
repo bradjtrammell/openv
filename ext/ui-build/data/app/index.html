@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>OpenV — Multiplayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" aria-label="Main navigation">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">V</span><span>OPEN<span class="brand-accent">V</span><small>Multiplayer</small></span></div>
+    <nav aria-label="Main"><button class="nav-link active" data-view="home" aria-current="page"><span aria-hidden="true">⌂</span> Home</button><button class="nav-link" data-view="servers"><span aria-hidden="true">◉</span> Servers</button><button class="nav-link" data-view="favorites"><span aria-hidden="true">☆</span> Favorites</button><button class="nav-link" data-view="settings"><span aria-hidden="true">⚙</span> Settings</button></nav>
+    <div class="sidebar-bottom"><span class="status-dot" id="native-dot" aria-hidden="true"></span><span id="native-status">Checking game client…</span></div>
+  </aside>
+  <main class="main" id="main">
+    <header class="topbar"><span class="breadcrumb" id="breadcrumb">Home</span><div class="top-actions"><span class="eyebrow">OPENV CLIENT</span><button id="quit" class="icon-button" title="Exit OpenV" aria-label="Exit OpenV">⏻</button></div></header>
+    <div class="content">
+      <section class="view" data-page="home" aria-labelledby="welcome-title">
+        <div class="hero"><div class="hero-overline">WELCOME TO OPENV</div><h1 id="welcome-title">Your world.<br><span>Multiplayer.</span></h1><p>Join a server, find your community, and get back into Los Santos.</p><button id="browse" class="primary">Browse servers <span aria-hidden="true">→</span></button><div class="hero-orb" aria-hidden="true"></div></div>
+        <div class="section-heading"><h2>Quick connect</h2><span>Join by server address</span></div>
+        <form id="connect-form" class="connect-panel" novalidate><label for="server-address">Server address</label><div class="connect-row"><input id="server-address" name="server-address" type="text" spellcheck="false" autocomplete="off" maxlength="255" placeholder="play.example.com:30120" aria-describedby="address-help"><button class="primary" type="submit">Connect <span aria-hidden="true">→</span></button></div><p id="address-help" class="hint">Use a hostname or IP address, optionally followed by a port.</p></form>
+        <div class="section-heading"><h2>Recent servers</h2><button class="text-button" data-view="favorites">View favorites →</button></div><div id="recent-list" class="server-grid" aria-live="polite"></div>
+      </section>
+      <section class="view" data-page="servers" hidden aria-labelledby="servers-title"><div class="page-head"><div><span class="overline">DISCOVER</span><h1 id="servers-title">Servers</h1><p>Connect directly or query a known server address.</p></div><button id="refresh" class="secondary">Refresh known servers</button></div><form id="query-form" class="search-bar" novalidate><label class="sr-only" for="query-address">Server address to query</label><input id="query-address" type="text" maxlength="255" placeholder="Enter server address…" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Find server</button></form><div id="server-list" class="server-grid" aria-live="polite"></div></section>
+      <section class="view" data-page="favorites" hidden aria-labelledby="favorites-title"><div class="page-head"><div><span class="overline">YOUR COLLECTION</span><h1 id="favorites-title">Favorites</h1><p>Your saved servers, ready whenever you are.</p></div><button id="add-favorite" class="secondary">Add server</button></div><div id="favorites-list" class="server-grid" aria-live="polite"></div></section>
+      <section class="view" data-page="settings" hidden aria-labelledby="settings-title"><div class="page-head"><div><span class="overline">PREFERENCES</span><h1 id="settings-title">Settings</h1><p>Local OpenV client preferences.</p></div></div><div class="settings-panel"><div><h2>Confirm before exiting</h2><p>Ask before closing the OpenV client.</p></div><label class="switch"><input id="confirm-exit" type="checkbox" checked><span class="switch-track"></span><span class="sr-only">Confirm before exiting</span></label></div><div class="settings-panel"><div><h2>Clear recent servers</h2><p>Remove locally stored recently used addresses. Favorites are unaffected.</p></div><button id="clear-recents" class="secondary">Clear history</button></div><p class="footnote">OpenV requires a legitimate GTA V installation. This interface does not bypass game ownership or authentication.</p></section>
+    </div>
+  </main>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="confirm-dialog" aria-labelledby="dialog-title"><form method="dialog"><h2 id="dialog-title">Exit OpenV?</h2><p>Any current multiplayer session will be closed.</p><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button value="exit" class="primary">Exit OpenV</button></div></form></dialog>
+</body>
+</html>

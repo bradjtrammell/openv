@@ -1,0 +1,148 @@
+name: OpenV first-party UI verification
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/openv-ui.yml'
+      - 'tools/build_openv_ui.py'
+      - 'tools/audit_openv_runtime.py'
+      - 'ext/ui-build/data/**'
+      - 'ext/ui-build/build.cmd'
+      - 'ext/ui-build/loadscreen/**'
+      - 'ext/ui-build/loadscreen-fallback/**'
+      - 'tests/test_openv_ui.py'
+      - 'tests/test_openv_runtime_audit.py'
+      - 'tests/test_openv_ui_browser.py'
+  pull_request:
+    paths:
+      - '.github/workflows/openv-ui.yml'
+      - 'tools/build_openv_ui.py'
+      - 'tools/audit_openv_runtime.py'
+      - 'ext/ui-build/data/**'
+      - 'ext/ui-build/build.cmd'
+      - 'ext/ui-build/loadscreen/**'
+      - 'ext/ui-build/loadscreen-fallback/**'
+      - 'tests/test_openv_ui.py'
+      - 'tests/test_openv_runtime_audit.py'
+      - 'tests/test_openv_ui_browser.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-ui:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check UI JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check ext/ui-build/data/app/app.js
+          node --check ext/ui-build/data/root.js
+          node --check ext/ui-build/loadscreen-fallback/code.js
+      - name: Run archive and security tests
+        run: python -m unittest discover -s tests -p test_openv_ui.py -v
+      - name: Run Windows runtime and PE parser regression tests
+        run: python -m unittest discover -s tests -p test_openv_runtime_audit.py -v
+      - name: Build reproducible source UI (without optional loadscreen)
+        run: python tools/build_openv_ui.py --source ext/ui-build/data --output build/openv-ui
+      - name: Verify source archive entries
+        run: >-
+          python -c "import sys; from pathlib import Path;
+          sys.path.insert(0, 'tools'); import build_openv_ui as ui;
+          ui.verify_archive(Path('build/openv-ui/data.zip'), ui.REQUIRED_MAIN);
+          ui.verify_archive(Path('build/openv-ui/data_big.zip'), ())"
+  browser-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install pinned browser harness
+        run: |
+          python -m pip install 'playwright==1.57.0'
+          python -m playwright install --with-deps chromium
+      - name: Verify native frame transport, CSP and UI interactions
+        run: python -m unittest discover -s tests -p test_openv_ui_browser.py -v
+      - name: Repeat native startup delivery and origin-isolation regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            python -m unittest discover -s tests -p test_openv_ui_browser.py -k root_ -v
+          done
+  compiled-loadscreen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile loadscreen or select independently distributable source-only fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f ext/ui-build/loadscreen/package.json ]]; then
+            corepack enable
+            corepack prepare yarn@1.22.22 --activate
+            yarn --cwd ext/ui-build/loadscreen install --frozen-lockfile --non-interactive
+            yarn --cwd ext/ui-build/loadscreen webpack --mode production
+            echo 'OPENV_LOADSCREEN_DIST=ext/ui-build/loadscreen/dist' >> "$GITHUB_ENV"
+          else
+            test -f ext/ui-build/loadscreen-fallback/index.html
+            test -f ext/ui-build/loadscreen-fallback/code.js
+            echo 'OPENV_LOADSCREEN_DIST=ext/ui-build/loadscreen-fallback' >> "$GITHUB_ENV"
+          fi
+      - name: Build verified complete UI ZIPs
+        run: >-
+          python tools/build_openv_ui.py --source ext/ui-build/data
+          --loadscreen-dist ${{ env.OPENV_LOADSCREEN_DIST }} --output build/openv-ui
+      - name: Verify compiled loadscreen and deterministic archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import sys
+          import zipfile
+          sys.path.insert(0, 'tools')
+          import build_openv_ui as ui
+          root = Path('build/openv-ui')
+          source = Path(__import__('os').environ['OPENV_LOADSCREEN_DIST'])
+          ui.verify_archive(root / 'data.zip', ui.REQUIRED_MAIN + ui.REQUIRED_LOADSCREEN)
+          ui.verify_archive(root / 'data_big.zip', ())
+          with zipfile.ZipFile(root / 'data.zip') as archive:
+              for name in ui.REQUIRED_LOADSCREEN:
+                  assert archive.read(name) == (source / name.removeprefix('loadscreen/')).read_bytes(), name
+          before = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                    for name in ('data.zip', 'data_big.zip')}
+          ui.build(Path('ext/ui-build/data'), root, source)
+          after = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                   for name in ('data.zip', 'data_big.zip')}
+          assert before == after, (before, after)
+          print('Verified real compiled loadscreen, all required UI assets, and reproducible ZIP hashes:', after)
+          PY
