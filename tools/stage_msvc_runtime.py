@@ -60,7 +60,7 @@ def microsoft_organization(subject: str) -> bool:
     Corporation must never satisfy the publisher identity requirement.
     """
     return bool(re.search(
-        r'(?i)(?:^|,\\s*)O\\s*=\\s*(?:"Microsoft Corporation"|Microsoft Corporation)(?=\\s*,|$)',
+        r'(?i)(?:^|,\s*)O\s*=\s*(?:"Microsoft Corporation"|Microsoft Corporation)(?=\s*,|$)',
         subject,
     ))
 
