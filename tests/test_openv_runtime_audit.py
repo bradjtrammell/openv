@@ -149,6 +149,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result['status'], 'incomplete')
         self.assertEqual(result['unresolved_imports'][0]['dlls'], ['libcef.dll'])
         (self.root / 'libcef.dll').write_bytes(fixture_pe(dll=True))
+        self.assertEqual(audit.audit(self.root)['status'], 'incomplete')
+        self.assertEqual(set(audit.audit(self.root)['missing_cef_runtime']),
+                         set(audit.CEF_REQUIRED_FILES))
+        for name in audit.CEF_REQUIRED_FILES:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'CEF resource fixture')
         self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
 
     def test_delay_import_fails_when_missing(self):
