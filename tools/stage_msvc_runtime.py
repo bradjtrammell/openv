@@ -95,6 +95,8 @@ def stage(root: Path, runtime: Path, *, verifier=verify_microsoft_signature) -> 
         except RuntimeAuditError as exc:
             raise StagingError(f'invalid AMD64 redistributable {name}: {exc}') from exc
         verifier(selected / name)
+        if checked_regular(selected / name) != data:
+            raise StagingError(f'redistributable changed during signature verification: {name}')
     # Existing runtime files are never replaced, even if their bytes match:
     # the build might have placed a different signed CRT beside the launcher.
     for name in REQUIRED_DLLS:
@@ -113,7 +115,9 @@ def stage(root: Path, runtime: Path, *, verifier=verify_microsoft_signature) -> 
         for temp, target in pending:
             if target.exists() or target.is_symlink():
                 raise StagingError(f'runtime file appeared during staging: {target.name}')
-            os.replace(temp, target)
+            # Atomic no-overwrite publish: os.replace() would clobber a DLL
+            # created between the preflight check and this publication.
+            os.link(temp, target)
             installed.append(target)
         return {'status': 'staged', 'origin': 'installed-visual-studio-vc143-x64-redist',
                 'source_version': selected.parent.parent.name,
