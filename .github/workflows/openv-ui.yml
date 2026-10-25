@@ -8,6 +8,8 @@ on:
       - 'tools/audit_openv_runtime.py'
       - 'tools/stage_msvc_runtime.py'
       - 'tools/stage_cef_runtime.py'
+      - 'tools/stage_open_runtime.py'
+      - 'tests/test_stage_open_runtime.py'
       - 'tests/test_stage_msvc_runtime.py'
       - 'tests/test_stage_cef_runtime.py'
       - 'ext/ui-build/data/**'
@@ -24,6 +26,8 @@ on:
       - 'tools/audit_openv_runtime.py'
       - 'tools/stage_msvc_runtime.py'
       - 'tools/stage_cef_runtime.py'
+      - 'tools/stage_open_runtime.py'
+      - 'tests/test_stage_open_runtime.py'
       - 'tests/test_stage_msvc_runtime.py'
       - 'tests/test_stage_cef_runtime.py'
       - 'ext/ui-build/data/**'
@@ -67,6 +71,8 @@ jobs:
         run: python -m unittest discover -s tests -p test_openv_runtime_audit.py -v
       - name: Verify VC143 runtime staging and rollback regressions
         run: python -m unittest discover -s tests -p test_stage_msvc_runtime.py -v
+      - name: Verify Mono/FFmpeg staging, ABI and rollback regressions
+        run: python -m unittest discover -s tests -p test_stage_open_runtime.py -v
       - name: Verify pinned CEF staging, provenance and rollback regressions
         run: python -m unittest discover -s tests -p test_stage_cef_runtime.py -v
       - name: Build reproducible source UI (without optional loadscreen)

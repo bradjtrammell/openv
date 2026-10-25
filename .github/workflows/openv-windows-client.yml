@@ -10,6 +10,8 @@ on:
       - 'tools/audit_openv_runtime.py'
       - 'tools/stage_msvc_runtime.py'
       - 'tools/stage_cef_runtime.py'
+      - 'tools/stage_open_runtime.py'
+      - 'tests/test_stage_open_runtime.py'
       - 'tests/test_stage_msvc_runtime.py'
       - 'tests/test_stage_cef_runtime.py'
       - 'ext/ui-build/**'
@@ -89,6 +91,10 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_stage_cef_runtime.py -v
           if ($LASTEXITCODE -ne 0) { throw 'CEF runtime staging tests failed' }
+      - name: Test owner-supplied Mono and FFmpeg runtime staging
+        run: |
+          python -m unittest discover -s tests -p test_stage_open_runtime.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Mono/FFmpeg staging security tests failed' }
       - name: Select installed Windows SDK
         shell: pwsh
         run: |
@@ -158,6 +164,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python tools/stage_cef_runtime.py --source vendor/cef --runtime code/bin/five/release --report build-report/cef-runtime-provenance.json
           if ($LASTEXITCODE -ne 0) { throw 'Pinned CEF runtime staging failed; inspect CEF provenance report' }
+      - name: Stage owner-supplied pinned Mono and FFmpeg runtime
+        id: open_deps
+        if: steps.build.outcome == 'success' && steps.cef.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          OPENV_RUNTIME_DEPENDENCIES_MANIFEST: ${{ vars.OPENV_RUNTIME_DEPENDENCIES_MANIFEST }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path build-report | Out-Null
+          if (-not $env:OPENV_RUNTIME_DEPENDENCIES_MANIFEST) {
+            @{ status='not_configured'; missing=@('mono-2.0-sgen.dll','avutil-56.dll','swresample-3.dll'); gameplay_verified=$false } |
+              ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 build-report/open-runtime-provenance.json
+            Write-Host 'Mono/FFmpeg sources not supplied; static audit will report missing dependencies.'
+            exit 0
+          }
+          python tools/stage_open_runtime.py --manifest $env:OPENV_RUNTIME_DEPENDENCIES_MANIFEST --runtime code/bin/five/release --report build-report/open-runtime-provenance.json
+          if ($LASTEXITCODE -ne 0) { throw 'Owner-supplied Mono/FFmpeg staging failed' }
       - name: Collect build files and provenance
         if: always()
         run: |
@@ -226,7 +250,7 @@ jobs:
           $checks.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
       - name: Audit Windows runtime binaries, dependencies and UI
         id: runtime_audit
-        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.msvc.outcome == 'success' && steps.cef.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.msvc.outcome == 'success' && steps.cef.outcome == 'success' && steps.open_deps.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -300,5 +324,5 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Enforce build result
-        if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.msvc.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
+        if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.msvc.outcome != 'success' || steps.cef.outcome != 'success' || steps.open_deps.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
         run: throw 'OpenV Windows build, source-built UI, static dependency audit, or byte-for-byte staged runtime verification failed. Download build-report and inspect diagnostics.'

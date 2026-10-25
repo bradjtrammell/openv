@@ -227,6 +227,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(audit.audit(self.root)['missing_cef_runtime'], ['locales/en-US.pak'])
         self.assertEqual(audit.audit(self.root)['status'], 'incomplete')
 
+    def test_mono_ffmpeg_dynamic_runtime_requires_license_and_matching_abi(self):
+        for name in ('mono-2.0-sgen.dll', 'avutil-56.dll'):
+            (self.root / name).write_bytes(fixture_pe(dll=True))
+        missing = audit.audit(self.root)
+        self.assertEqual(missing['status'], 'incomplete')
+        self.assertEqual(set(missing['missing_open_runtime']),
+                         {'OPENV-MONO-LICENSE.txt', 'OPENV-FFMPEG-LICENSE.txt',
+                          'swresample-3.dll'})
+        (self.root / 'swresample-3.dll').write_bytes(fixture_pe(dll=True))
+        (self.root / 'OPENV-MONO-LICENSE.txt').write_text('Mono license fixture')
+        (self.root / 'OPENV-FFMPEG-LICENSE.txt').write_text('FFmpeg license fixture')
+        complete = audit.audit(self.root)
+        self.assertEqual(complete['missing_open_runtime'], [])
+        self.assertEqual(complete['status'], 'static_inventory_pass')
+        (self.root / 'avutil-56.dll').unlink()
+        self.assertEqual(audit.audit(self.root)['missing_open_runtime'],
+                         ['avutil-56.dll'])
+
     def test_unrelated_nested_dll_is_not_dependency_closure(self):
         (self.root / 'FiveM.exe').write_bytes(fixture_pe(imports=('libcef.dll',)))
         hidden = self.root / 'unrelated' / 'libcef.dll'
