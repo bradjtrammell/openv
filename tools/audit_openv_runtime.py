@@ -35,8 +35,10 @@ REQUIRED_FILES = (
 )
 # CEF loads resources dynamically; PE import closure alone cannot prove it works.
 # These are the minimum first-party browser runtime assets required by CEF 103.
-CEF_REQUIRED_FILES = ('icudtl.dat', 'cef.pak', 'cef_100_percent.pak',
-                      'cef_200_percent.pak', 'locales/en-US.pak', 'CEF-LICENSE.txt')
+CEF_REQUIRED_FILES = ('chrome_elf.dll', 'icudtl.dat',
+                      'v8_context_snapshot.bin', 'resources.pak',
+                      'chrome_100_percent.pak', 'chrome_200_percent.pak',
+                      'locales/en-US.pak', 'CEF-LICENSE.txt')
 # Mono and FFmpeg are dynamically loaded by game components. A present DLL
 # requires the matching license and ABI partner even if no PE import names it.
 OPEN_RUNTIME_REQUIRED = {
