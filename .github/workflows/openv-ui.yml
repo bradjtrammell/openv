@@ -263,6 +263,14 @@ jobs:
           New-Item -ItemType Directory -Force $runtime | Out-Null
           python tools/stage_cef_runtime.py --source vendor/cef --runtime $runtime --report cef-smoke/stage-report.json
           if ($LASTEXITCODE -ne 0) { throw 'Actual pinned CEF distribution failed staging validation' }
+      - name: Verify real CEF import closure against installed Windows system libraries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONPATH = 'tools'
+          $runtime = Join-Path $env:RUNNER_TEMP 'openv-cef-smoke-runtime'
+          python -c "import audit_openv_runtime as a; from pathlib import Path; import os,json; r=Path(os.environ['RUNNER_TEMP'])/'openv-cef-smoke-runtime'; names=a.pe_imports((r/'libcef.dll').read_bytes(),'dll'); staged={p.name.casefold() for p in r.iterdir() if p.is_file()}; missing=sorted(n for n in names if not a.is_system_dll(n) and n.casefold() not in staged); os_names=['bluetoothapis.dll','credui.dll','dhcpcsvc.dll','esent.dll','mf.dll','mfplat.dll','mfreadwrite.dll','ndfapi.dll','uiautomationcore.dll','urlmon.dll','usp10.dll','wevtapi.dll','winusb.dll']; absent=sorted(n for n in os_names if not (Path(os.environ['WINDIR'])/'System32'/n).is_file()); result={'status':'pass' if not missing and not absent else 'fail','missing_non_os_imports':missing,'missing_windows_system_files':absent,'cef_import_count':len(names),'gameplay_verified':False}; Path('cef-smoke/import-closure.json').write_text(json.dumps(result,indent=2)); print(json.dumps(result,indent=2)); assert not missing and not absent"
+          if ($LASTEXITCODE -ne 0) { throw 'Actual pinned CEF import closure is incomplete on Windows 2022' }
       - name: Upload CEF provenance only (never vendor binaries)
         if: always()
         uses: actions/upload-artifact@v5
