@@ -26,6 +26,8 @@ class StageCEFTests(unittest.TestCase):
             'cef_binary_103.0.0-cfx-m103.2605+g1316dae+chromium-103.0.5060.141_windows64_minimal\n')
         for name in cef.REQUIRED + tuple('Resources/' + n for n in cef.REQUIRED_PAK):
             (self.source / name).write_bytes(b'MZmock' if name.endswith('.dll') else b'CEF resource')
+        # Snapshots are an explicit either/or invariant, not in cef.REQUIRED.
+        (self.source / 'Resources/v8_context_snapshot.bin').write_bytes(b'CEF resource')
         (self.source / 'Resources/locales/en-US.pak').write_bytes(b'locale')
         self.pe = mock.patch.object(cef, 'pe_imports', side_effect=lambda data, role: set())
         self.pe.start()
@@ -76,6 +78,49 @@ class StageCEFTests(unittest.TestCase):
         with self.assertRaisesRegex(cef.CEFStageError, 'resources.pak'):
             cef.stage(self.source, self.runtime)
         self.assertEqual(list(self.runtime.iterdir()), [])
+
+    def test_stages_real_default_v8_snapshot_without_renaming(self):
+        (self.source / 'Resources/v8_context_snapshot.bin').unlink()
+        payload = b'actual default V8 snapshot'
+        (self.source / 'Resources/snapshot_blob.bin').write_bytes(payload)
+        report = cef.stage(self.source, self.runtime)
+        self.assertEqual(report['v8_snapshots'], ['snapshot_blob.bin'])
+        self.assertEqual((self.runtime / 'snapshot_blob.bin').read_bytes(), payload)
+        self.assertFalse((self.runtime / 'v8_context_snapshot.bin').exists())
+
+    def test_accepts_snapshot_in_release_directory(self):
+        (self.source / 'Resources/v8_context_snapshot.bin').unlink()
+        (self.source / 'Release/snapshot_blob.bin').write_bytes(b'V8 release snapshot')
+        report = cef.stage(self.source, self.runtime)
+        self.assertEqual(report['v8_snapshots'], ['snapshot_blob.bin'])
+        self.assertEqual((self.runtime / 'snapshot_blob.bin').read_bytes(), b'V8 release snapshot')
+
+    def test_preserves_both_snapshot_formats_when_present(self):
+        (self.source / 'Resources/snapshot_blob.bin').write_bytes(b'default V8 snapshot')
+        report = cef.stage(self.source, self.runtime)
+        self.assertEqual(report['v8_snapshots'], list(cef.SNAPSHOT_VARIANTS))
+        self.assertEqual((self.runtime / 'snapshot_blob.bin').read_bytes(), b'default V8 snapshot')
+
+    def test_missing_both_snapshots_fails_closed(self):
+        (self.source / 'Resources/v8_context_snapshot.bin').unlink()
+        with self.assertRaisesRegex(cef.CEFStageError, 'V8 snapshot missing'):
+            cef.stage(self.source, self.runtime)
+        self.assertEqual(list(self.runtime.iterdir()), [])
+
+    def test_conflicting_snapshot_copies_are_rejected(self):
+        (self.source / 'Release/v8_context_snapshot.bin').write_bytes(b'different')
+        with self.assertRaisesRegex(cef.CEFStageError, 'conflicting CEF V8'):
+            cef.stage(self.source, self.runtime)
+        self.assertEqual(list(self.runtime.iterdir()), [])
+
+    def test_snapshot_symlink_is_rejected(self):
+        (self.source / 'Resources/v8_context_snapshot.bin').unlink()
+        try:
+            (self.source / 'Resources/snapshot_blob.bin').symlink_to(self.source / 'LICENSE.txt')
+        except OSError:
+            self.skipTest('symlinks unavailable')
+        with self.assertRaisesRegex(cef.CEFStageError, 'linked CEF'):
+            cef.stage(self.source, self.runtime)
 
     def test_preserves_optional_gpu_runtime_and_vulkan_manifest(self):
         for name in ('vk_swiftshader.dll', 'vulkan-1.dll', 'dxcompiler.dll',

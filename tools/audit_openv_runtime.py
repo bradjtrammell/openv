@@ -36,9 +36,11 @@ REQUIRED_FILES = (
 # CEF loads resources dynamically; PE import closure alone cannot prove it works.
 # These are the minimum first-party browser runtime assets required by CEF 103.
 CEF_REQUIRED_FILES = ('chrome_elf.dll', 'icudtl.dat',
-                      'v8_context_snapshot.bin', 'resources.pak',
+                      'resources.pak',
                       'chrome_100_percent.pak', 'chrome_200_percent.pak',
                       'locales/en-US.pak', 'CEF-LICENSE.txt')
+CEF_SNAPSHOT_FILES = ('v8_context_snapshot.bin', 'snapshot_blob.bin')
+CEF_SNAPSHOT_MISSING = 'v8_context_snapshot.bin or snapshot_blob.bin'
 # Mono and FFmpeg are dynamically loaded by game components. A present DLL
 # requires the matching license and ABI partner even if no PE import names it.
 OPEN_RUNTIME_REQUIRED = {
@@ -71,7 +73,7 @@ oleacc.dll oleaut32.dll opengl32.dll powrprof.dll propsys.dll psapi.dll
 rasapi32.dll rpcrt4.dll secur32.dll setupapi.dll shell32.dll shcore.dll
 shlwapi.dll user32.dll userenv.dll uxtheme.dll version.dll winhttp.dll
 wininet.dll winmm.dll windowscodecs.dll winspool.drv wintrust.dll wlanapi.dll ws2_32.dll
-wtsapi32.dll ucrtbase.dll xmllite.dll avrt.dll pdh.dll
+wtsapi32.dll ucrtbase.dll xmllite.dll avrt.dll pdh.dll bthprops.cpl
 '''.split())
 
 class RuntimeAuditError(ValueError):
@@ -150,8 +152,11 @@ def pe_imports(data: bytes, role: str) -> set[str]:
             name = data[pos:end].decode('ascii').lower()
         except UnicodeDecodeError as exc:
             raise RuntimeAuditError('non-ASCII imported DLL name') from exc
-        if not re.fullmatch(r'[a-z0-9_.-]+\.(?:dll|drv)', name):
-            raise RuntimeAuditError('invalid imported DLL name')
+        # Windows import tables may reference system CPL modules, which are
+        # PE DLLs with a .cpl suffix (notably Microsoft bthprops.cpl).
+        # Unknown CPL imports still fail dependency closure below.
+        if not re.fullmatch(r'[a-z0-9_.-]+\.(?:dll|drv|cpl)', name):
+            raise RuntimeAuditError(f'invalid imported DLL name: {name!r}')
         return name
 
     if role == 'managed':
@@ -282,6 +287,8 @@ def audit(root: Path, baseline: dict | None = None) -> dict:
     missing = [name for name in REQUIRED_FILES if name.casefold() not in files]
     missing_cef = ([name for name in CEF_REQUIRED_FILES if name.casefold() not in files]
                    if 'libcef.dll' in files else [])
+    if 'libcef.dll' in files and not any(name.casefold() in files for name in CEF_SNAPSHOT_FILES):
+        missing_cef.append(CEF_SNAPSHOT_MISSING)
     missing_open_runtime = sorted({
         dependency
         for dll, requirements in OPEN_RUNTIME_REQUIRED.items()
