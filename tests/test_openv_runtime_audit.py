@@ -111,6 +111,11 @@ class PEImportTests(unittest.TestCase):
             self.assertTrue(audit.is_system_dll(name), name)
         self.assertTrue(audit.is_system_dll('api-ms-win-core-file-l1-1-0.dll'))
         self.assertTrue(audit.is_system_dll('bthprops.cpl'))
+        # Exact Windows OS imports observed in the real pinned CEF 103 build.
+        for name in ['bluetoothapis.dll','credui.dll','dhcpcsvc.dll','esent.dll','mf.dll','mfplat.dll','mfreadwrite.dll','ndfapi.dll','uiautomationcore.dll','urlmon.dll','usp10.dll','wevtapi.dll','winusb.dll']:
+            self.assertTrue(audit.is_system_dll(name), name)
+        for name in ('steam_api64.dll', 'mono-2.0-sgen.dll', 'avutil-56.dll', 'swresample-3.dll'):
+            self.assertFalse(audit.is_system_dll(name), name)
         self.assertFalse(audit.is_system_dll('unknown.cpl'))
         self.assertFalse(audit.is_system_dll('vcruntime140.dll'))
         self.assertFalse(audit.is_system_dll('libcef.dll'))

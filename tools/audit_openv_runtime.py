@@ -74,6 +74,7 @@ rasapi32.dll rpcrt4.dll secur32.dll setupapi.dll shell32.dll shcore.dll
 shlwapi.dll user32.dll userenv.dll uxtheme.dll version.dll winhttp.dll
 wininet.dll winmm.dll windowscodecs.dll winspool.drv wintrust.dll wlanapi.dll ws2_32.dll
 wtsapi32.dll ucrtbase.dll xmllite.dll avrt.dll pdh.dll bthprops.cpl
+bluetoothapis.dll credui.dll dhcpcsvc.dll esent.dll mf.dll mfplat.dll mfreadwrite.dll ndfapi.dll uiautomationcore.dll urlmon.dll usp10.dll wevtapi.dll winusb.dll
 '''.split())
 
 class RuntimeAuditError(ValueError):
