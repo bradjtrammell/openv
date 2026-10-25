@@ -68,8 +68,10 @@ def fixture_managed_pe(*, flags=1, metadata=b'BSJB', machine=0x14c, clr=True):
 
 class PEImportTests(unittest.TestCase):
     def test_normal_and_delay_imports(self):
-        pe = fixture_pe(imports=('KERNEL32.dll', 'vcruntime140.dll'), delay_imports=('LIBCEF.DLL',))
-        self.assertEqual(audit.pe_imports(pe, 'exe'), {'kernel32.dll', 'vcruntime140.dll', 'libcef.dll'})
+        pe = fixture_pe(imports=('KERNEL32.dll', 'vcruntime140.dll', 'BTHPROPS.CPL'),
+                        delay_imports=('LIBCEF.DLL',))
+        self.assertEqual(audit.pe_imports(pe, 'exe'),
+                         {'kernel32.dll', 'vcruntime140.dll', 'bthprops.cpl', 'libcef.dll'})
 
     def test_import_free_pe(self):
         self.assertEqual(audit.pe_imports(fixture_pe(), 'exe'), set())
@@ -108,6 +110,8 @@ class PEImportTests(unittest.TestCase):
         for name in ('avrt.dll', 'dwrite.dll', 'pdh.dll', 'windowscodecs.dll'):
             self.assertTrue(audit.is_system_dll(name), name)
         self.assertTrue(audit.is_system_dll('api-ms-win-core-file-l1-1-0.dll'))
+        self.assertTrue(audit.is_system_dll('bthprops.cpl'))
+        self.assertFalse(audit.is_system_dll('unknown.cpl'))
         self.assertFalse(audit.is_system_dll('vcruntime140.dll'))
         self.assertFalse(audit.is_system_dll('libcef.dll'))
 
@@ -151,8 +155,8 @@ class RuntimeTests(unittest.TestCase):
         (self.root / 'libcef.dll').write_bytes(fixture_pe(dll=True))
         self.assertEqual(audit.audit(self.root)['status'], 'incomplete')
         self.assertEqual(set(audit.audit(self.root)['missing_cef_runtime']),
-                         set(audit.CEF_REQUIRED_FILES))
-        for name in audit.CEF_REQUIRED_FILES:
+                         set(audit.CEF_REQUIRED_FILES) | {audit.CEF_SNAPSHOT_MISSING})
+        for name in audit.CEF_REQUIRED_FILES + ('v8_context_snapshot.bin',):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF resource fixture')
@@ -223,7 +227,8 @@ class RuntimeTests(unittest.TestCase):
         missing = audit.audit(self.root)['missing_cef_runtime']
         self.assertEqual(set(missing), {'resources.pak',
                                          'chrome_100_percent.pak',
-                                         'chrome_200_percent.pak'})
+                                         'chrome_200_percent.pak',
+                                         audit.CEF_SNAPSHOT_MISSING})
 
     def test_cef_dynamic_resource_closure_is_required(self):
         # libcef.dll is valid PE, but without ICU, locales, .pak files and
@@ -231,8 +236,9 @@ class RuntimeTests(unittest.TestCase):
         (self.root / 'libcef.dll').write_bytes(fixture_pe(dll=True))
         incomplete = audit.audit(self.root)
         self.assertEqual(incomplete['status'], 'incomplete')
-        self.assertEqual(set(incomplete['missing_cef_runtime']), set(audit.CEF_REQUIRED_FILES))
-        for name in audit.CEF_REQUIRED_FILES:
+        self.assertEqual(set(incomplete['missing_cef_runtime']),
+                         set(audit.CEF_REQUIRED_FILES) | {audit.CEF_SNAPSHOT_MISSING})
+        for name in audit.CEF_REQUIRED_FILES + ('v8_context_snapshot.bin',):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF resource fixture')
@@ -243,9 +249,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(audit.audit(self.root)['missing_cef_runtime'], ['locales/en-US.pak'])
         self.assertEqual(audit.audit(self.root)['status'], 'incomplete')
 
+    def test_cef_snapshot_blob_satisfies_runtime_closure_without_forged_context(self):
+        (self.root / 'libcef.dll').write_bytes(fixture_pe(dll=True))
+        for name in audit.CEF_REQUIRED_FILES + ('snapshot_blob.bin',):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF fixture')
+        self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
+        (self.root / 'snapshot_blob.bin').unlink()
+        result = audit.audit(self.root)
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertIn(audit.CEF_SNAPSHOT_MISSING, result['missing_cef_runtime'])
+
     def test_cef_chrome_elf_requires_real_amd64_pe(self):
         (self.root / 'libcef.dll').write_bytes(fixture_pe(dll=True))
-        for name in audit.CEF_REQUIRED_FILES:
+        for name in audit.CEF_REQUIRED_FILES + ('v8_context_snapshot.bin',):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF resource fixture')

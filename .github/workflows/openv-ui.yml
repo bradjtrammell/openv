@@ -209,3 +209,65 @@ jobs:
           assert before == after, (before, after)
           print('Verified real compiled loadscreen, all required UI assets, and reproducible ZIP hashes:', after)
           PY
+
+  pinned-cef-distribution:
+    # Validate the actual pinned Cfx CEF archive without waiting for the
+    # 40-minute native game-client build. Only provenance JSON is uploaded.
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Acquire exact existing Cfx-pinned CEF build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./fxd.ps1 get-chrome
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned CEF acquisition failed' }
+      - name: Inventory actual CEF snapshot and resource filenames
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force cef-smoke | Out-Null
+          $paths = @('Resources/v8_context_snapshot.bin', 'Resources/snapshot_blob.bin',
+                     'Release/v8_context_snapshot.bin', 'Release/snapshot_blob.bin')
+          $snapshots = @($paths | ForEach-Object {
+            $path = Join-Path 'vendor/cef' $_
+            $present = Test-Path -LiteralPath $path -PathType Leaf
+            [pscustomobject]@{
+              path = $_
+              present = $present
+              bytes = $(if ($present) { (Get-Item -LiteralPath $path).Length } else { $null })
+              sha256 = $(if ($present) { (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() } else { $null })
+            }
+          })
+          $resourceNames = @(Get-ChildItem 'vendor/cef/Resources' -File -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name)
+          @{
+            cef_build = (Get-Content -Raw vendor/cef/cef_build_name.txt).Trim()
+            snapshot_candidates = $snapshots
+            resources = $resourceNames
+            gameplay_verified = $false
+          } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 cef-smoke/source-inventory.json
+          Get-Content cef-smoke/source-inventory.json
+      - name: Stage actual CEF bytes and verify license, PE and snapshot closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = Join-Path $env:RUNNER_TEMP 'openv-cef-smoke-runtime'
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          python tools/stage_cef_runtime.py --source vendor/cef --runtime $runtime --report cef-smoke/stage-report.json
+          if ($LASTEXITCODE -ne 0) { throw 'Actual pinned CEF distribution failed staging validation' }
+      - name: Upload CEF provenance only (never vendor binaries)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: openv-cef-pinned-distribution-provenance
+          path: cef-smoke/*.json
+          if-no-files-found: warn
+          retention-days: 7

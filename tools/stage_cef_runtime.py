@@ -23,17 +23,19 @@ MAX_TOTAL_BYTES = 2 * (1 << 30)
 MAX_FILE_BYTES = 512 * (1 << 20)
 # CEF 103+ changed its resource archive names; cef.pak/cef_100_percent.pak
 # belong to older Chromium releases and must never substitute for these.
-# The snapshot and chrome_elf are mandatory in the pinned Windows x64 ABI.
+# Cfx's pinned CEF build may use the standard context snapshot or the
+# non-context V8 snapshot. At least one real snapshot must be present.
+# Never fabricate a missing snapshot or rename one format to the other.
 REQUIRED = ('Release/libcef.dll', 'Release/chrome_elf.dll',
-            'Resources/icudtl.dat', 'Resources/v8_context_snapshot.bin',
-            'LICENSE.txt')
+            'Resources/icudtl.dat', 'LICENSE.txt')
+SNAPSHOT_VARIANTS = ('v8_context_snapshot.bin', 'snapshot_blob.bin')
 REQUIRED_PAK = ('resources.pak', 'chrome_100_percent.pak',
                 'chrome_200_percent.pak')
 OPTIONAL_DLL = ('d3dcompiler_47.dll', 'libEGL.dll', 'libGLESv2.dll',
                 'vk_swiftshader.dll', 'vulkan-1.dll', 'dxcompiler.dll',
                 'dxil.dll')
 OPTIONAL_RELEASE = ('vk_swiftshader_icd.json',)
-OPTIONAL_RESOURCES = ('snapshot_blob.bin', 'LICENSES.chromium.html')
+OPTIONAL_RESOURCES = ('LICENSES.chromium.html',)
 BUILD_NAME_RE = re.compile(r'cef_binary_[a-zA-Z0-9.+_-]+_windows64_minimal\Z')
 
 
@@ -72,6 +74,22 @@ def discover(source: Path) -> tuple[str, dict[str, bytes]]:
     result: dict[str, bytes] = {}
     for name in REQUIRED:
         result[name] = regular(source / name)
+    # CEF builds can ship the context snapshot or the default V8 snapshot.
+    # Preserve the actual filename and bytes; never substitute one for the
+    # other. Some distributions place snapshots in Release, not Resources.
+    snapshots = []
+    for name in SNAPSHOT_VARIANTS:
+        candidates = [source / directory / name for directory in ('Resources', 'Release')]
+        present = [path for path in candidates if path.exists() or path.is_symlink()]
+        if not present:
+            continue
+        data = regular(present[0])
+        if any(regular(path) != data for path in present[1:]):
+            raise CEFStageError(f'conflicting CEF V8 snapshot copies: {name}')
+        result['Resources/' + name] = data
+        snapshots.append(name)
+    if not snapshots:
+        raise CEFStageError('CEF V8 snapshot missing: expected v8_context_snapshot.bin or snapshot_blob.bin')
     # Require the modern CEF 103 pack set; old cef.pak cannot satisfy it.
     for name in REQUIRED_PAK:
         result['Resources/' + name] = regular(source / 'Resources' / name)
@@ -173,6 +191,8 @@ def stage(source: Path, runtime: Path) -> dict:
             if regular(runtime / relative) != data:
                 raise CEFStageError(f'CEF staged bytes changed: {relative}')
         return {'status': 'staged', 'cef_build': build,
+                'v8_snapshots': [name for name in SNAPSHOT_VARIANTS
+                                 if 'Resources/' + name in sources],
                 'origin': 'pinned-existing-vendor-cef', 'files': [
                     {'path': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
                     for name, data in sorted(destinations.items())],
