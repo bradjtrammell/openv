@@ -37,6 +37,13 @@ REQUIRED_FILES = (
 # These are the minimum first-party browser runtime assets required by CEF 103.
 CEF_REQUIRED_FILES = ('icudtl.dat', 'cef.pak', 'cef_100_percent.pak',
                       'cef_200_percent.pak', 'locales/en-US.pak', 'CEF-LICENSE.txt')
+# Mono and FFmpeg are dynamically loaded by game components. A present DLL
+# requires the matching license and ABI partner even if no PE import names it.
+OPEN_RUNTIME_REQUIRED = {
+    'mono-2.0-sgen.dll': ('OPENV-MONO-LICENSE.txt',),
+    'avutil-56.dll': ('swresample-3.dll', 'OPENV-FFMPEG-LICENSE.txt'),
+    'swresample-3.dll': ('avutil-56.dll', 'OPENV-FFMPEG-LICENSE.txt'),
+}
 MAX_FILES = 20000
 MAX_RUNTIME_BYTES = 12 * (1 << 30)
 MAX_PE_BYTES = 512 * (1 << 20)
@@ -273,9 +280,17 @@ def audit(root: Path, baseline: dict | None = None) -> dict:
     missing = [name for name in REQUIRED_FILES if name.casefold() not in files]
     missing_cef = ([name for name in CEF_REQUIRED_FILES if name.casefold() not in files]
                    if 'libcef.dll' in files else [])
+    missing_open_runtime = sorted({
+        dependency
+        for dll, requirements in OPEN_RUNTIME_REQUIRED.items()
+        if dll.casefold() in files
+        for dependency in requirements
+        if dependency.casefold() not in files
+    })
     report: dict = {'audit': 'openv-windows-runtime-static-v1',
                     'status': 'incomplete', 'files': len(files), 'total_bytes': total,
                     'missing_required': missing, 'missing_cef_runtime': missing_cef,
+                    'missing_open_runtime': missing_open_runtime,
                     'binaries': [], 'unresolved_imports': [],
                     'ui': None, 'file_manifest': manifest, 'execution_verified': False, 'gameplay_verified': False}
     if not missing:
@@ -318,7 +333,7 @@ def audit(root: Path, baseline: dict | None = None) -> dict:
             report['unresolved_imports'].append({'path': path.relative_to(root).as_posix(), 'dlls': unresolved})
     if baseline is not None:
         report['staging_integrity'] = compare_staging(baseline, manifest)
-    if (not missing and not missing_cef and report['ui'] and not report.get('binary_errors') and
+    if (not missing and not missing_cef and not missing_open_runtime and report['ui'] and not report.get('binary_errors') and
             not report['unresolved_imports'] and
             (baseline is None or report['staging_integrity']['status'] == 'pass')):
         report['status'] = 'static_inventory_pass'
