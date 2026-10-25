@@ -155,7 +155,7 @@ class RuntimeTests(unittest.TestCase):
         for name in audit.CEF_REQUIRED_FILES:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b'CEF resource fixture')
+            path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF resource fixture')
         self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
 
     def test_delay_import_fails_when_missing(self):
@@ -209,6 +209,22 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(audit.RuntimeAuditError, 'link'):
             audit.audit(self.root)
 
+    def test_cef103_rejects_legacy_pack_substitution(self):
+        (self.root / 'libcef.dll').write_bytes(fixture_pe(dll=True))
+        for name in ('cef.pak', 'cef_100_percent.pak', 'cef_200_percent.pak'):
+            (self.root / name).write_bytes(b'legacy')
+        for name in audit.CEF_REQUIRED_FILES:
+            if name in ('resources.pak', 'chrome_100_percent.pak',
+                        'chrome_200_percent.pak'):
+                continue
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF resource fixture')
+        missing = audit.audit(self.root)['missing_cef_runtime']
+        self.assertEqual(set(missing), {'resources.pak',
+                                         'chrome_100_percent.pak',
+                                         'chrome_200_percent.pak'})
+
     def test_cef_dynamic_resource_closure_is_required(self):
         # libcef.dll is valid PE, but without ICU, locales, .pak files and
         # the license it is not a functioning or redistributable browser.
@@ -219,13 +235,26 @@ class RuntimeTests(unittest.TestCase):
         for name in audit.CEF_REQUIRED_FILES:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b'CEF resource fixture')
+            path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF resource fixture')
         complete = audit.audit(self.root)
         self.assertEqual(complete['missing_cef_runtime'], [])
         self.assertEqual(complete['status'], 'static_inventory_pass')
         (self.root / 'locales/en-US.pak').unlink()
         self.assertEqual(audit.audit(self.root)['missing_cef_runtime'], ['locales/en-US.pak'])
         self.assertEqual(audit.audit(self.root)['status'], 'incomplete')
+
+    def test_cef_chrome_elf_requires_real_amd64_pe(self):
+        (self.root / 'libcef.dll').write_bytes(fixture_pe(dll=True))
+        for name in audit.CEF_REQUIRED_FILES:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(fixture_pe(dll=True) if path.suffix == '.dll' else b'CEF resource fixture')
+        self.assertEqual(audit.audit(self.root)['status'], 'static_inventory_pass')
+        (self.root / 'chrome_elf.dll').write_bytes(b'not a Windows binary')
+        result = audit.audit(self.root)
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertEqual(result['binary_errors'][0]['path'], 'chrome_elf.dll')
+        self.assertIn('PE MZ', result['binary_errors'][0]['error'])
 
     def test_mono_ffmpeg_dynamic_runtime_requires_license_and_matching_abi(self):
         for name in ('mono-2.0-sgen.dll', 'avutil-56.dll'):

@@ -126,6 +126,14 @@ UI build and static dependency audit all pass. Historical inventories can be
 examined with `--manifest path/to/package-manifest.json`; that mode never
 returns a passing runtime status because it cannot inspect the actual bytes.
 
+The pinned Windows CEF 103 runtime uses `resources.pak`,
+`chrome_100_percent.pak`, and `chrome_200_percent.pak`, **not** the
+pre-CEF-90 `cef.pak` naming convention. Staging also requires the CEF
+`chrome_elf.dll`, V8 context snapshot, ICU data, English locale, and
+license, and preserves optional Vulkan/ANGLE components when present.
+A missing modern pack is a real runtime blocker, not grounds to fabricate
+or silently substitute an older incompatible dependency.
+
 A static audit is **not** proof of execution, correct dynamic `LoadLibrary`
 paths, game entitlement, authorized redistribution, or GTA V gameplay. A
 licensed Windows PC and actual CEF/game-host testing remain required.

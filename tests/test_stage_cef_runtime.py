@@ -32,7 +32,6 @@ class StageCEFTests(unittest.TestCase):
         self.addCleanup(self.pe.stop)
 
     def test_publishes_pinned_runtime_with_hashes_and_license(self):
-        (self.source / 'Release/chrome_elf.dll').write_bytes(b'MZchrome')
         (self.source / 'Resources/cef_extensions.pak').write_bytes(b'extension')
         (self.source / 'Resources/locales/fr.pak').write_bytes(b'fr')
         report = cef.stage(self.source, self.runtime)
@@ -42,7 +41,10 @@ class StageCEFTests(unittest.TestCase):
         self.assertEqual((self.runtime / 'CEF-LICENSE.txt').read_bytes(), b'CEF resource')
         self.assertEqual((self.runtime / 'locales/en-US.pak').read_bytes(), b'locale')
         self.assertEqual((self.runtime / 'cef_extensions.pak').read_bytes(), b'extension')
-        self.assertEqual(len(report['files']), 10)
+        self.assertEqual(len(report['files']), 11)
+        self.assertEqual((self.runtime / 'chrome_elf.dll').read_bytes(), b'MZmock')
+        self.assertEqual((self.runtime / 'v8_context_snapshot.bin').read_bytes(), b'CEF resource')
+        self.assertEqual((self.runtime / 'resources.pak').read_bytes(), b'CEF resource')
         for entry in report['files']:
             import hashlib
             self.assertEqual(entry['sha256'], hashlib.sha256(
@@ -56,13 +58,43 @@ class StageCEFTests(unittest.TestCase):
         self.assertFalse((self.runtime / 'icudtl.dat').exists())
 
     def test_rejects_missing_license_or_resource(self):
-        for name in ('LICENSE.txt', 'Resources/cef.pak', 'Resources/icudtl.dat'):
+        for name in ('LICENSE.txt', 'Release/chrome_elf.dll',
+                     'Resources/resources.pak', 'Resources/chrome_100_percent.pak',
+                     'Resources/chrome_200_percent.pak', 'Resources/icudtl.dat',
+                     'Resources/v8_context_snapshot.bin'):
             path = self.source / name
             original = path.read_bytes()
             path.unlink()
             with self.subTest(name=name), self.assertRaises(cef.CEFStageError):
                 cef.stage(self.source, self.runtime)
             path.write_bytes(original)
+
+    def test_legacy_cef_pack_names_do_not_replace_modern_cef103(self):
+        (self.source / 'Resources/resources.pak').unlink()
+        for name in ('cef.pak', 'cef_100_percent.pak', 'cef_200_percent.pak'):
+            (self.source / 'Resources' / name).write_bytes(b'old ABI')
+        with self.assertRaisesRegex(cef.CEFStageError, 'resources.pak'):
+            cef.stage(self.source, self.runtime)
+        self.assertEqual(list(self.runtime.iterdir()), [])
+
+    def test_preserves_optional_gpu_runtime_and_vulkan_manifest(self):
+        for name in ('vk_swiftshader.dll', 'vulkan-1.dll', 'dxcompiler.dll',
+                     'dxil.dll'):
+            (self.source / 'Release' / name).write_bytes(b'MZgpu')
+        (self.source / 'Release/vk_swiftshader_icd.json').write_bytes(
+            b'{"file_format_version": "1.0.0"}')
+        report = cef.stage(self.source, self.runtime)
+        self.assertEqual(report['status'], 'staged')
+        for name in ('vk_swiftshader.dll', 'vulkan-1.dll', 'dxcompiler.dll',
+                     'dxil.dll', 'vk_swiftshader_icd.json'):
+            self.assertTrue((self.runtime / name).is_file(), name)
+            self.assertIn(name, [entry['path'] for entry in report['files']])
+
+    def test_rejects_unsafe_optional_vulkan_manifest(self):
+        (self.source / 'Release/vk_swiftshader_icd.json').symlink_to(
+            self.source / 'LICENSE.txt')
+        with self.assertRaisesRegex(cef.CEFStageError, 'linked'):
+            cef.stage(self.source, self.runtime)
 
     def test_rejects_unpinned_build(self):
         (self.source / 'cef_build_name.txt').write_text('cef_binary_103_linux64_minimal')

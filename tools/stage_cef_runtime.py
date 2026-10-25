@@ -21,11 +21,19 @@ from audit_openv_runtime import RuntimeAuditError, pe_imports
 MAX_FILES = 512
 MAX_TOTAL_BYTES = 2 * (1 << 30)
 MAX_FILE_BYTES = 512 * (1 << 20)
-REQUIRED = ('Release/libcef.dll', 'Resources/icudtl.dat', 'LICENSE.txt')
-REQUIRED_PAK = ('cef.pak', 'cef_100_percent.pak', 'cef_200_percent.pak')
-OPTIONAL_DLL = ('chrome_elf.dll', 'd3dcompiler_47.dll', 'libEGL.dll', 'libGLESv2.dll')
-OPTIONAL_RESOURCES = ('v8_context_snapshot.bin', 'snapshot_blob.bin',
-                      'LICENSES.chromium.html')
+# CEF 103+ changed its resource archive names; cef.pak/cef_100_percent.pak
+# belong to older Chromium releases and must never substitute for these.
+# The snapshot and chrome_elf are mandatory in the pinned Windows x64 ABI.
+REQUIRED = ('Release/libcef.dll', 'Release/chrome_elf.dll',
+            'Resources/icudtl.dat', 'Resources/v8_context_snapshot.bin',
+            'LICENSE.txt')
+REQUIRED_PAK = ('resources.pak', 'chrome_100_percent.pak',
+                'chrome_200_percent.pak')
+OPTIONAL_DLL = ('d3dcompiler_47.dll', 'libEGL.dll', 'libGLESv2.dll',
+                'vk_swiftshader.dll', 'vulkan-1.dll', 'dxcompiler.dll',
+                'dxil.dll')
+OPTIONAL_RELEASE = ('vk_swiftshader_icd.json',)
+OPTIONAL_RESOURCES = ('snapshot_blob.bin', 'LICENSES.chromium.html')
 BUILD_NAME_RE = re.compile(r'cef_binary_[a-zA-Z0-9.+_-]+_windows64_minimal\Z')
 
 
@@ -64,13 +72,19 @@ def discover(source: Path) -> tuple[str, dict[str, bytes]]:
     result: dict[str, bytes] = {}
     for name in REQUIRED:
         result[name] = regular(source / name)
-    # CEF 103 may ship different resource sets; require its core .pak files.
+    # Require the modern CEF 103 pack set; old cef.pak cannot satisfy it.
     for name in REQUIRED_PAK:
         result['Resources/' + name] = regular(source / 'Resources' / name)
     for name in OPTIONAL_DLL:
         path = source / 'Release' / name
         if path.exists() or path.is_symlink():
             result['Release/' + name] = regular(path)
+    # Some CEF builds include a Vulkan ICD manifest beside their binaries.
+    # Preserve it as data, never execute it or silently fabricate one.
+    for name in OPTIONAL_RELEASE:
+        path = source / 'Release' / name
+        if path.exists() or path.is_symlink():
+            result['Release/' + name] = regular(path, limit=1 << 20)
     # Preserve every legitimate CEF .pak in this pinned distribution.
     for path in (source / 'Resources').glob('*.pak'):
         if not re.fullmatch(r'[a-zA-Z0-9_-]+\.pak', path.name):
