@@ -255,3 +255,16 @@ failures, then verify no ACK, stable handle tracking and recovery.
 ## GTA engine handle recycling and stale movement rejection (2026-10-26)
 
 The native GTA adapter now checks the actual `GET_ENTITY_MODEL` before moving or deleting a tracked proxy. If GTA has recycled an engine handle for a different model, the adapter never moves or deletes that unrelated entity and retires its stale server-ID bookkeeping on despawn. A missing model native fails closed and retains cleanup for retry. It also tracks each proxy's latest accepted server sequence: older movement is rejected while equal-sequence interpolation remains permitted. Deterministic adapter tests exercise stale updates, recycled handles, foreign-entity preservation, and fresh spawns after cleanup. This is local-only proxy safety, not OneSync network ownership or licensed gameplay verification.
+
+## GTA native handle alias protection (2026-10-26)
+
+The real GTA CREATE_PED/CREATE_VEHICLE native can return an existing handle rather
+than a new entity during an engine transition or invalid native result. Before
+mission ownership, freezing, collision configuration or rollback deletion, the
+adapter now refuses a handle already tracked for another authenticated remote
+entity, the real local player ped, or the player's currently occupied vehicle.
+If local ped or occupied-vehicle lookup cannot be verified, the new spawn fails
+closed. An aliased handle is never treated as a newly allocated proxy and is
+never deleted during failed-spawn cleanup. Deterministic production-adapter
+regressions inject aliased local and remote handles. This does not implement
+OneSync network ownership or prove GTA V gameplay.

@@ -234,6 +234,25 @@ bool same_engine_model(int handle, uint32_t expected) {
     return native_result(GET_ENTITY_MODEL, current, handle) && current == expected;
 }
 
+// CREATE_PED/CREATE_VEHICLE may return a handle that GTA already uses.
+// Never acquire, configure or delete an existing remote proxy or the real
+// local avatar/occupied vehicle when a native returns a colliding handle.
+// A missing local-player native is treated as unsafe, not as proof that
+// the handle is free.
+bool reserved_engine_handle(int handle) {
+    if (handle <= 0) return true;
+    for (const auto& item : entities) {
+        if (item.second.handle == handle) return true;
+    }
+    int local_ped = 0;
+    if (!native_result(PLAYER_PED_ID, local_ped)) return true;
+    if (handle == local_ped) return true;
+    int local_vehicle = 0;
+    if (!native_result(GET_VEHICLE_PED_IS_IN, local_vehicle, local_ped, false))
+        return true;
+    return local_vehicle > 0 && handle == local_vehicle;
+}
+
 // GTA may delete and recycle an engine handle independently of the numeric
 // server entity. Never delete an unrelated replacement entity. If model
 // lookup fails, retain ownership for retry rather than guessing.
@@ -382,6 +401,12 @@ extern "C" int OpenVGameAuthoritySpawn(
     }
     release_model(model);
     const bool created_live = created > 0 && exists(created);
+    // A native returning a pre-existing handle did not allocate a new
+    // entity for this server ID. Do not mission-own, freeze or delete it.
+    if (created_live && reserved_engine_handle(created)) {
+        entities.erase(entry);
+        return 0;
+    }
     // GTA must retain authority-owned proxies across normal world cleanup.
     // A mission-ownership failure is a failed spawn, never a successful ACK.
     const bool mission_owned = called && created_live &&
