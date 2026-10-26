@@ -2,6 +2,7 @@
 #include <Hooking.h>
 #include <nutsnbolts.h>
 #include <ScriptEngine.h>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -65,12 +66,25 @@ int fail_invincible_calls = 0;
 int fail_ai_block_calls = 0;
 bool fail_delete = false;
 int session = 7;
+bool burst_mode = false;
+std::array<uint64_t, 12> burst_handles{};
 
 int authorized(void*) { return allowed ? 1 : 0; }
 int tick(void* pointer, openv_authority_frame* frame) {
     assert(pointer == &session);
     assert(frame->struct_size == sizeof(*frame));
     ++ticked;
+    if (burst_mode) {
+        for (size_t i = 0; i < burst_handles.size(); ++i) {
+            if (burst_handles[i]) continue;
+            openv_authority_entity entity{
+                10000u + uint64_t(i), OPENV_AUTHORITY_PLAYER, 0, 1, 0,
+                10, 20, 30, 45
+            };
+            // The authority pump retries deferred spawns on the next frame.
+            (void)OpenVGameAuthoritySpawn(nullptr, &entity, &burst_handles[i]);
+        }
+    }
     return 1;
 }
 template<class T>
@@ -557,6 +571,35 @@ int main() {
     fail_delete = false;
     assert(OpenVGameAuthorityUnbind(&session) == 1);
     assert(objects.size() == 1);
+
+    // A burst of 12 authorized remote players must not run 12 synchronous
+    // GTA CREATE_PED and mission-ownership sequences on a single frame.
+    // Deferred spawns succeed on the next main frame without duplicates,
+    // without requiring a fresh session and without running on OnGameFrame.
+    assert(OpenVGameAuthorityBind(&session, tick, authorized, nullptr) == 1);
+    assert(OpenVGameAuthorityActivate(&session) == 1);
+    burst_mode = true;
+    const int burst_start = created;
+    OnMainGameFrame.Fire();
+    assert(created == burst_start + 8);
+    for (size_t i = 0; i < burst_handles.size(); ++i)
+        assert((burst_handles[i] != 0) == (i < 8));
+    OnGameFrame.Fire();
+    assert(created == burst_start + 8);
+    OnMainGameFrame.Fire();
+    assert(created == burst_start + 12);
+    for (const auto burst_handle : burst_handles) assert(burst_handle != 0);
+    OnMainGameFrame.Fire();
+    assert(created == burst_start + 12); // retries cannot duplicate spawns
+    burst_mode = false;
+    for (size_t i = 0; i < burst_handles.size(); ++i) {
+        auto entity = player(10000u + uint64_t(i));
+        assert(OpenVGameAuthorityDespawn(nullptr, burst_handles[i], &entity) == 1);
+        burst_handles[i] = 0;
+    }
+    assert(objects.size() == 1);
+    assert(OpenVGameAuthorityDeactivate(&session) == 1);
+    assert(OpenVGameAuthorityUnbind(&session) == 1);
 
     // Full native C ABI lifecycle: game ped -> authenticated bridge join ->
     // nonblocking GTA frame replication -> teardown after entitlement loss.

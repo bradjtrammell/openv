@@ -1,3 +1,14 @@
+
+## 2026-10-26 — bounded GTA main-frame entity spawning (PR #25)
+
+- **Verified starting GitHub heads:** Client master `e20638743e69d8dbc7ed089f2d91ce40066543de`; Server main `c05cf50c32712d99f2c9731b4841861b6559a4ca`; Identity main `687cfcc31ffdb55b5a48dbc31532b1b8c4c9e419`; Admin master `87e3c1a926ffa2c7da2c5f1bf5b9508988a30dc2`; Data master `28b96c69606b337521589d1505da2a4d66b04eea`.
+- **Source and CI inspected:** actual GTA adapter, native test fixture, game ABI, private server native process/CI and Windows client workflow. Latest experimental full Windows client build [40365607020](https://github.com/bradjtrammell/openv/actions/runs/40365607020) **FAIL** at static runtime audit: Mono `mono-2.0-sgen.dll` and FFmpeg `avutil-56.dll`, `swresample-3.dll` are not staged; GTA launch NOT_RUN. Existing private server CI [40284645676](https://github.com/bradjtrammell/openv-server/actions/runs/40284645676) **PASS** on pinned earlier public adapter.
+- **Implementation:** cap synchronous `CREATE_PED` / `CREATE_VEHICLE` calls at eight per actual GTA main-game frame, defer overflow for authority-pump retry, charge failed attempts, do not budget-limit revocation cleanup. This directly protects real GTA frame time under remote entity bursts without changing the authenticated authority ABI or OneSync claims.
+- **Changed files:** `code/components/gta-net-five/src/OpenVAuthorityGame.cpp`, `tests/openv_gta_native_adapter.cpp`, `docs/openv-native-gta-integration.md`, `DEVELOPMENT_LOG.md`.
+- **Implementation commits:** `a8fecabc2004788df5717781c7306f2df9652b96`, `ba53475f34bd6d12d7543c66bbb2cad4e90e75a5`, `362f0023858b09a657c1d58a99875ef19383922e`, Windows test fix `e9122b3c58142bd62243f30d7e86a61e253d91e5`.
+- **Verification:** initial [40374635981](https://github.com/bradjtrammell/openv/actions/runs/40374635981) **FAIL** Windows MSVC /WX C4456 variable shadow in new test; corrected. Final exact-implementation [40374777729](https://github.com/bradjtrammell/openv/actions/runs/40374777729) **PASS** Linux GCC and Windows MSVC native adapter compilation/execution, plus bridge staging tests. Full GTA client build, legitimate GTA launch, OneSync network ownership, resource execution and licensed two-PC gameplay **NOT_RUN**. No public release, deployment, spending, or entitlement bypass.
+- **Next:** authorized game-host-to-Cfx startup handoff and lawful runtime dependencies; real OneSync ownership and licensed two-PC acceptance test. Preserve hourly automation.
+
 # OpenV development log
 
 ## 2026-10-26T14:07:41.826Z — GTA native stale movement and recycled-handle protection (PR #21)
