@@ -20,6 +20,9 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace {
 constexpr uint64_t PLAYER_PED_ID = 0xD80958FC74E988A6ULL;
@@ -61,6 +64,10 @@ bool activated = false;
 bool inside_game_frame = false;
 openv_game_native_api native_owner_api{};
 void* native_owner_session = nullptr;
+#ifdef _WIN32
+HMODULE native_bridge_module = nullptr;
+bool loading_native_bridge = false;
+#endif
 
 bool on_game_thread() {
     return game_thread != std::thread::id{} &&
@@ -399,6 +406,14 @@ extern "C" int OpenVGameAuthorityStopNative(void) {
     } catch (...) { return 0; }
     native_owner_session = nullptr;
     native_owner_api = {};
+#ifdef _WIN32
+    // The callback code lives inside the loaded module: never unload it
+    // until native stop, callback teardown and destroy have all succeeded.
+    if (native_bridge_module) {
+        FreeLibrary(native_bridge_module);
+        native_bridge_module = nullptr;
+    }
+#endif
     return 1;
 }
 
@@ -406,6 +421,12 @@ extern "C" int OpenVGameAuthorityStartNative(
     const openv_game_native_api* api, const openv_game_native_launch* launch,
     char* error, size_t error_capacity) {
     native_error(error, error_capacity, "");
+#ifdef _WIN32
+    if (native_bridge_module && !loading_native_bridge) {
+        native_error(error, error_capacity, "native bridge DLL already owned");
+        return 0;
+    }
+#endif
     if (inside_game_frame || native_owner_session || bound_session ||
         !entities.empty() || !complete_native_api(api) || !launch ||
         launch->struct_size != sizeof(*launch) || !launch->bridge_port ||
@@ -481,6 +502,77 @@ extern "C" int OpenVGameAuthorityStartNative(
     if (!OpenVGameAuthorityActivate(native_owner_session))
         return fail("native authority game activation failed");
     return 1;
+}
+
+extern "C" int OpenVGameAuthorityStartNativeFromDll(
+    const wchar_t* absolute_library_path,
+    const openv_game_native_launch* launch,
+    char* error, size_t error_capacity) {
+    native_error(error, error_capacity, "");
+#ifdef _WIN32
+    // A trusted launcher supplies the local DLL path. Do not search PATH,
+    // current directory, network shares or an environment variable.
+    if (inside_game_frame || native_bridge_module || native_owner_session ||
+        bound_session || !entities.empty() || !absolute_library_path ||
+        !absolute_library_path[0] || !absolute_library_path[1] ||
+        !absolute_library_path[2] ||
+        !((absolute_library_path[0] >= L'A' && absolute_library_path[0] <= L'Z') ||
+          (absolute_library_path[0] >= L'a' && absolute_library_path[0] <= L'z')) ||
+        absolute_library_path[1] != L':' ||
+        (absolute_library_path[2] != L'\\' && absolute_library_path[2] != L'/')) {
+        native_error(error, error_capacity, "absolute local bridge DLL path required");
+        return 0;
+    }
+    HMODULE module = LoadLibraryExW(absolute_library_path, nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!module) {
+        native_error(error, error_capacity, "native bridge DLL could not be loaded");
+        return 0;
+    }
+    openv_game_native_api api{};
+    api.struct_size = sizeof(api);
+    api.abi_version = reinterpret_cast<decltype(api.abi_version)>(
+        GetProcAddress(module, "openv_authority_abi_version"));
+    api.create = reinterpret_cast<decltype(api.create)>(
+        GetProcAddress(module, "openv_authority_create"));
+    api.configure_position_source =
+        reinterpret_cast<decltype(api.configure_position_source)>(
+            GetProcAddress(module, "openv_authority_configure_position_source"));
+    api.start = reinterpret_cast<decltype(api.start)>(
+        GetProcAddress(module, "openv_authority_start"));
+    api.tick = reinterpret_cast<decltype(api.tick)>(
+        GetProcAddress(module, "openv_authority_tick"));
+    api.stop = reinterpret_cast<decltype(api.stop)>(
+        GetProcAddress(module, "openv_authority_stop"));
+    api.destroy = reinterpret_cast<decltype(api.destroy)>(
+        GetProcAddress(module, "openv_authority_destroy"));
+    if (!complete_native_api(&api)) {
+        FreeLibrary(module);
+        native_error(error, error_capacity, "native bridge DLL ABI or exports mismatch");
+        return 0;
+    }
+    native_bridge_module = module;
+    loading_native_bridge = true;
+    const int started = OpenVGameAuthorityStartNative(
+        &api, launch, error, error_capacity);
+    loading_native_bridge = false;
+    if (!started && !native_owner_session) {
+        // Startup failed before ownership was established, or orderly
+        // rollback already destroyed the native session.
+        if (native_bridge_module) {
+            FreeLibrary(native_bridge_module);
+            native_bridge_module = nullptr;
+        }
+    }
+    // A failed rollback with a still-live session deliberately retains the
+    // module. The entitled launcher must retry StopNative on the game thread.
+    return started;
+#else
+    (void)absolute_library_path;
+    (void)launch;
+    native_error(error, error_capacity, "native bridge DLL loading requires Windows");
+    return 0;
+#endif
 }
 
 static InitFunction openvNativeGameFrame([] {
