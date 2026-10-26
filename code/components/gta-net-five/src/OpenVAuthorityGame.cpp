@@ -21,6 +21,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
