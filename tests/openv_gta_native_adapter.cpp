@@ -142,6 +142,8 @@ struct FakeAuthority {
     int stops = 0;
     int destroys = 0;
     bool fail_join = false;
+    bool fail_stop_once = false;
+    bool fail_destroy_once = false;
 } fake;
 uint32_t fake_abi() { return OPENV_AUTHORITY_ABI_VERSION; }
 void* fake_create(const openv_game_native_config* config,
@@ -202,6 +204,10 @@ int fake_tick(void* authority_session, openv_authority_frame* frame) {
 int fake_stop(void* authority_session) {
     assert(authority_session == &fake);
     ++fake.stops;
+    if (fake.fail_stop_once) {
+        fake.fail_stop_once = false;
+        return 0;
+    }
     if (fake.handle) {
         auto p = player(400);
         assert(fake.callbacks.despawn(fake.context, fake.handle, &p) == 1);
@@ -212,6 +218,10 @@ int fake_stop(void* authority_session) {
 int fake_destroy(void* authority_session) {
     assert(authority_session == &fake);
     ++fake.destroys;
+    if (fake.fail_destroy_once) {
+        fake.fail_destroy_once = false;
+        return 0;
+    }
     return 1;
 }
 openv_game_native_api fake_api() {
@@ -390,6 +400,28 @@ int main() {
     assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.starts == 3 && fake.stops == 3 && fake.destroys == 3);
+
+    // Failed native stop must retain the session for a retry; a successful
+    // stop must not be replayed just because the later destroy stage fails.
+    fake.fail_stop_once = true;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityStopNative() == 0);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(fake.stops == 4 && fake.destroys == 3);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.stops == 5 && fake.destroys == 4);
+
+    fake.fail_destroy_once = true;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityStopNative() == 0);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(fake.stops == 6 && fake.destroys == 5);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.stops == 6 && fake.destroys == 6);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.stops == 7 && fake.destroys == 7);
 
     // A real Windows DLL must be loadable by absolute path, its ABI exports
     // must be resolved, and the same GTA game-thread callbacks must work.
