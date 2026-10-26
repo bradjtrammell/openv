@@ -282,3 +282,25 @@ when the model becomes loaded. Missing or failing GTA native handlers remain
 retryable; no entity is ACKed before its model is loaded. Deterministic
 production-source mock tests cover shared-model coalescing and independent
 vehicle requests. Actual GTA V gameplay remains NOT_RUN.
+
+## Native GTA rendering options during authenticated DLL startup (2026-10-26)
+
+The Windows DLL startup path now resolves the **existing** server ABI v1
+`openv_authority_configure_motion` and
+`openv_authority_configure_interest` exports in addition to the seven
+required lifecycle functions. Missing exports fail closed before any session
+is created. After native session creation and game-thread binding, but before
+the authenticated numeric join, the GTA host configures **120 ms** movement
+interpolation with an **80-world-unit** teleport snap threshold, and a
+**350-world-unit** interest radius with **50-unit** hysteresis. The server
+still validates the full authenticated world inventory; only nearby
+entities are projected into GTA. These values apply to the DLL-backed
+Windows host; the existing direct v1 function-table entry point retains
+its prior configuration behavior.
+
+The Windows mock bridge refuses to start unless both configurations were
+applied with the exact values and in the correct lifecycle order. No
+capability or ticket is exposed to the UI or a command line. This improves
+remote-player motion and engine entity load **after** a legitimate host
+activates the bridge; it does not provide the missing launcher handoff,
+OneSync network ownership, game assets or real two-PC verification.
