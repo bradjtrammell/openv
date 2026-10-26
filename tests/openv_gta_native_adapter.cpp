@@ -1,5 +1,6 @@
 #include <OpenVAuthorityGame.h>
 #include <Hooking.h>
+#include <nutsnbolts.h>
 #include <ScriptEngine.h>
 #include <cassert>
 #include <cmath>
@@ -232,6 +233,10 @@ int main() {
     assert(OpenVGameAuthorityAllowModel(OPENV_AUTHORITY_VEHICLE, 0x12345678u) == 0);
     assert(OpenVGameAuthorityActivate(&session) == 1);
     assert(OpenVGameAuthorityAllowModel(OPENV_AUTHORITY_VEHICLE, 0x12345678u) == 0);
+    OnMainGameFrame.Fire();
+    assert(ticked == 1);
+    // The real Cfx OnGameFrame event can run on a loading watchdog thread.
+    // The native bridge must never be dispatched by that event.
     OnGameFrame.Fire();
     assert(ticked == 1);
 
@@ -278,7 +283,7 @@ int main() {
     assert(OpenVGameAuthorityUnbind(&session) == 0);
     assert(OpenVGameAuthorityDeactivate(&session) == 1);
     assert(OpenVGameAuthorityUnbind(&session) == 1);
-    OnGameFrame.Fire();
+    OnMainGameFrame.Fire();
     assert(ticked == 1);
 
     // Rebinding a new authenticated session cannot resurrect old handles.
@@ -352,11 +357,13 @@ int main() {
     assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
     assert(OpenVGameAuthorityNativeActive() == 1);
     assert(fake.starts == 1 && fake.destroys == 0);
-    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
     OnGameFrame.Fire();
+    assert(fake.frames == 0);
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
+    OnMainGameFrame.Fire();
     assert(fake.frames == 1 && fake.handle != 0);
     assert(objects.count(int(fake.handle)) == 1);
-    OnGameFrame.Fire();
+    OnMainGameFrame.Fire();
     assert(fake.frames == 2);
     assert(objects.at(int(fake.handle)).x == 99);
     int foreign_stop = -1;
@@ -369,7 +376,7 @@ int main() {
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.stops == 1 && fake.destroys == 1);
     assert(fake.handle == 0 && objects.size() == 1);
-    OnGameFrame.Fire();
+    OnMainGameFrame.Fire();
     assert(fake.frames == 2);
     assert(OpenVGameAuthorityNativeActive() == 0);
 
@@ -401,9 +408,9 @@ int main() {
     assert(OpenVGameAuthorityNativeActive() == 1);
     assert(OpenVGameAuthorityStartNativeFromDll(
         dll_path, &launch, error, sizeof(error)) == 0);
-    OnGameFrame.Fire();
+    OnMainGameFrame.Fire();
     assert(created == created_before_dll + 1);
-    OnGameFrame.Fire();
+    OnMainGameFrame.Fire();
     assert(moved == moved_before_dll + 1);
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(deleted == deleted_before_dll + 1);

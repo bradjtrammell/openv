@@ -9,6 +9,7 @@
  */
 #include <StdInc.h>
 #include <Hooking.h>
+#include <nutsnbolts.h>
 #include <ScriptEngine.h>
 #include <OpenVAuthorityGame.h>
 
@@ -616,7 +617,9 @@ extern "C" int OpenVGameAuthorityStartNativeFromDll(
 }
 
 static InitFunction openvNativeGameFrame([] {
-    OnGameFrame.Connect([] {
+    // OnGameFrame may also run from the loading watchdog thread. GTA
+    // natives and authority entity handles must only run on the main thread.
+    OnMainGameFrame.Connect([] {
         if (!bound_session || !activated || !on_game_thread() || !tick_callback)
             return;
         openv_authority_frame frame{};
