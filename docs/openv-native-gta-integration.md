@@ -186,3 +186,23 @@ interoperable OneSync network objects. Mono, FFmpeg and Steamworks
 dependencies, genuine GTA V launch, in-game resource execution and licensed
 two-PC gameplay remain separate acceptance gates. No proprietary assets,
 ownership bypasses, public releases or production deployments are included.
+
+
+## Engine-handle ownership on failed native spawns (2026-10-26)
+
+After GTA's `CREATE_PED` or `CREATE_VEHICLE` returns a live handle, the
+adapter requires `SET_ENTITY_AS_MISSION_ENTITY` to succeed before returning
+success to the authority pump. If mission ownership fails, it attempts to
+delete the unacknowledged handle. A failed deletion is **not forgotten**:
+that handle remains tracked as pending cleanup, blocks duplicate spawns for
+the same authoritative entity ID, and is retried before a subsequent spawn.
+On game-thread unbind, pending unacknowledged handles are also drained; an
+unsuccessful deletion refuses unbind so the native owner can retry safely.
+The same guarantee applies after admission revocation because cleanup is not
+gated on a still-valid session. A successful engine spawn is therefore never
+acknowledged until the game has accepted mission ownership. This is still a
+local-only GTA proxy and is **not** a OneSync network entity.
+
+Deterministic Linux GCC and Windows MSVC adapter tests inject both mission
+ownership and entity deletion failures. These are engine-native mocks, not
+actual GTA V gameplay tests.

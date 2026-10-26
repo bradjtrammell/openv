@@ -51,6 +51,9 @@ struct Tracked {
     uint32_t model;
     uint32_t bucket;
     int handle;
+    // A native spawn failed after allocating a GTA handle. Keep it until
+    // deletion succeeds; the authority pump never ACKed this entity.
+    bool pending_cleanup;
 };
 
 std::unordered_map<uint64_t, Tracked> entities;
@@ -202,6 +205,20 @@ bool remove_entity(int handle) {
     return !exists(handle);
 }
 
+bool cleanup_unacknowledged() {
+    bool complete = true;
+    for (auto it = entities.begin(); it != entities.end();) {
+        if (!it->second.pending_cleanup) { ++it; continue; }
+        if (!remove_entity(it->second.handle)) {
+            complete = false;
+            ++it;
+        } else {
+            it = entities.erase(it);
+        }
+    }
+    return complete;
+}
+
 bool matching(const Tracked& entry, uint64_t handle,
               const openv_authority_entity& e) {
     return entry.handle > 0 && uint64_t(entry.handle) == handle &&
@@ -261,7 +278,9 @@ extern "C" int OpenVGameAuthorityDeactivate(void* session) {
 }
 
 extern "C" int OpenVGameAuthorityUnbind(void* session) {
-    if (!on_game_thread() || session != bound_session || activated || !entities.empty())
+    if (!on_game_thread() || inside_game_frame ||
+        session != bound_session || activated ||
+        !cleanup_unacknowledged() || !entities.empty())
         return 0;
     activated = false;
     bound_session = nullptr;
@@ -281,7 +300,15 @@ extern "C" int OpenVGameAuthoritySpawn(
     void*, const openv_authority_entity* e, uint64_t* handle) {
     if (handle) *handle = 0;
     if (!authorized() || !activated || !e || !handle ||
-        !transform_valid(*e) || entities.count(e->id)) return 0;
+        !transform_valid(*e)) return 0;
+    // An unacknowledged CREATE_* may still own a live GTA handle. Never
+    // allocate another until its previous handle has been removed.
+    const auto prior = entities.find(e->id);
+    if (prior != entities.end()) {
+        if (!prior->second.pending_cleanup ||
+            !remove_entity(prior->second.handle)) return 0;
+        entities.erase(prior);
+    }
     const uint32_t model = e->kind == OPENV_AUTHORITY_PLAYER ?
         FREEMODE_MALE : e->model;
     if (e->kind == OPENV_AUTHORITY_PLAYER && e->model != 0)
@@ -295,7 +322,7 @@ extern "C" int OpenVGameAuthoritySpawn(
     std::unordered_map<uint64_t, Tracked>::iterator entry;
     try {
         const auto inserted = entities.emplace(e->id,
-            Tracked{e->kind, model, e->bucket, 0});
+            Tracked{e->kind, model, e->bucket, 0, false});
         if (!inserted.second) return 0;
         entry = inserted.first;
     } catch (...) { return 0; }
@@ -310,9 +337,19 @@ extern "C" int OpenVGameAuthoritySpawn(
             float(e->y), float(e->z), float(e->heading), false, false);
     }
     release_model(model);
-    if (!called || !exists(created)) {
-        if (created > 0) (void)remove_entity(created);
-        entities.erase(entry);
+    const bool created_live = created > 0 && exists(created);
+    // GTA must retain authority-owned proxies across normal world cleanup.
+    // A mission-ownership failure is a failed spawn, never a successful ACK.
+    const bool mission_owned = called && created_live &&
+        native_void(SET_ENTITY_AS_MISSION_ENTITY, created, true, true);
+    if (!mission_owned) {
+        if (created_live) {
+            entry->second.handle = created;
+            entry->second.pending_cleanup = true;
+            if (remove_entity(created)) entities.erase(entry);
+        } else {
+            entities.erase(entry);
+        }
         return 0;
     }
     entry->second.handle = created;
