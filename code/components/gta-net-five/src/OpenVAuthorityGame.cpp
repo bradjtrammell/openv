@@ -426,7 +426,10 @@ extern "C" int OpenVGameAuthorityDespawn(
         return 0;
     const auto it = entities.find(e->id);
     if (it == entities.end()) return 1;
-    if (!matching(it->second, handle, *e)) return 0;
+    // An old despawn must not delete a newer authoritative incarnation.
+    // EngineAuthorityPump supplies the latest rendered sequence on cleanup.
+    if (!matching(it->second, handle, *e) ||
+        e->sequence < it->second.sequence) return 0;
     if (!remove_entity(it->second.handle, it->second.model)) return 0;
     entities.erase(it);
     return 1;
