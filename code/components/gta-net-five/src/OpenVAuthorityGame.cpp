@@ -94,6 +94,12 @@ bool native_owner_destroyed = false;
 #ifdef _WIN32
 HMODULE native_bridge_module = nullptr;
 bool loading_native_bridge = false;
+// These are resolved only from the independently staged, ABI-checked native
+// bridge. They are used during startup before any GTA game-frame dispatch.
+using configure_native_motion = int (*)(void*, uint32_t, double);
+using configure_native_interest = int (*)(void*, double, double);
+configure_native_motion bridge_motion = nullptr;
+configure_native_interest bridge_interest = nullptr;
 #endif
 
 bool on_game_thread() {
@@ -653,6 +659,23 @@ extern "C" int OpenVGameAuthorityStartNative(
     } catch (...) {
         return fail("native local avatar sampler configuration failed");
     }
+#ifdef _WIN32
+    // The real DLL path opts into the server's existing game-thread render
+    // interpolation and interest management before the authenticated join.
+    // The direct v1 function-table entry point retains its prior behavior.
+    // 120ms smooths ordinary 75-100ms updates; 80m snaps teleports. Interest
+    // keeps nearby players/vehicles while 50m hysteresis avoids edge churn.
+    if (loading_native_bridge) {
+        try {
+            if (!bridge_motion || !bridge_interest ||
+                bridge_motion(native_owner_session, 120, 80.0) != 1 ||
+                bridge_interest(native_owner_session, 350.0, 50.0) != 1)
+                return fail("native game render configuration failed");
+        } catch (...) {
+            return fail("native game render configuration failed");
+        }
+    }
+#endif
     for (size_t i = 0; i < launch->model_count; ++i) {
         const auto& model = launch->models[i];
         if (!OpenVGameAuthorityAllowModel(model.kind, model.model))
@@ -718,16 +741,29 @@ extern "C" int OpenVGameAuthorityStartNativeFromDll(
         GetProcAddress(module, "openv_authority_stop"));
     api.destroy = reinterpret_cast<decltype(api.destroy)>(
         GetProcAddress(module, "openv_authority_destroy"));
-    if (!complete_native_api(&api)) {
+    // These additive authority ABI v1 exports already exist in the server
+    // library. Require them for the Windows GTA path rather than silently
+    // reverting to unsmoothed, unbounded engine entity rendering.
+    const auto motion = reinterpret_cast<configure_native_motion>(
+        GetProcAddress(module, "openv_authority_configure_motion"));
+    const auto interest = reinterpret_cast<configure_native_interest>(
+        GetProcAddress(module, "openv_authority_configure_interest"));
+    if (!complete_native_api(&api) || !motion || !interest) {
         FreeLibrary(module);
         native_error(error, error_capacity, "native bridge DLL ABI or exports mismatch");
         return 0;
     }
+    bridge_motion = motion;
+    bridge_interest = interest;
     native_bridge_module = module;
     loading_native_bridge = true;
     const int started = OpenVGameAuthorityStartNative(
         &api, launch, error, error_capacity);
     loading_native_bridge = false;
+    // Startup configuration is complete; no later frame may dereference
+    // optional exports. The DLL itself remains owned until StopNative.
+    bridge_motion = nullptr;
+    bridge_interest = nullptr;
     if (!started && !native_owner_session) {
         // Startup failed before ownership was established, or orderly
         // rollback already destroyed the native session.
