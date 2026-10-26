@@ -141,6 +141,18 @@ typedef struct openv_game_native_launch {
 OPENV_GAME_API int OpenVGameAuthorityStartNative(
     const openv_game_native_api* api, const openv_game_native_launch* launch,
     char* error, size_t error_capacity);
+/*
+ * Windows native DLL integration: the entitled launcher supplies an absolute
+ * local path to its independently packaged openv_world_bridge.dll and the
+ * same private launch contract used by StartNative. This function resolves
+ * the actual openv_authority_* exports, checks ABI v1, and retains the DLL
+ * until native stop/destroy completes. It never discovers tickets, credentials
+ * or game ownership itself. Linux test builds return 0 (Windows-only host).
+ */
+OPENV_GAME_API int OpenVGameAuthorityStartNativeFromDll(
+    const wchar_t* absolute_library_path,
+    const openv_game_native_launch* launch,
+    char* error, size_t error_capacity);
 /* Retryable teardown. Retains the session and callbacks on failed cleanup. */
 OPENV_GAME_API int OpenVGameAuthorityStopNative(void);
 OPENV_GAME_API int OpenVGameAuthorityNativeActive(void);

@@ -7,6 +7,9 @@
 #include <iostream>
 #include <thread>
 #include <unordered_map>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace {
 constexpr uint64_t PLAYER_PED_ID = 0xD80958FC74E988A6ULL;
@@ -335,5 +338,37 @@ int main() {
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.starts == 3 && fake.stops == 3 && fake.destroys == 3);
 
-    std::cout << "OpenV GTA engine native adapter: PASS\n";
+    // A real Windows DLL must be loadable by absolute path, its ABI exports
+    // must be resolved, and the same GTA game-thread callbacks must work.
+#ifdef _WIN32
+    const int created_before_dll = created;
+    const int moved_before_dll = moved;
+    const int deleted_before_dll = deleted;
+    assert(OpenVGameAuthorityStartNativeFromDll(
+        L"openv-gta-native-mock.dll", &launch, error, sizeof(error)) == 0);
+    wchar_t dll_path[MAX_PATH]{};
+    const DWORD path_size = GetFullPathNameW(
+        L"openv-gta-native-mock.dll", MAX_PATH, dll_path, nullptr);
+    assert(path_size > 0 && path_size < MAX_PATH);
+    assert(OpenVGameAuthorityStartNativeFromDll(
+        dll_path, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    assert(OpenVGameAuthorityStartNativeFromDll(
+        dll_path, &launch, error, sizeof(error)) == 0);
+    OnGameFrame.Fire();
+    assert(created == created_before_dll + 1);
+    OnGameFrame.Fire();
+    assert(moved == moved_before_dll + 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(deleted == deleted_before_dll + 1);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    // DLL unload and native session destroy must permit a fresh join.
+    assert(OpenVGameAuthorityStartNativeFromDll(
+        dll_path, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+#else
+    assert(OpenVGameAuthorityStartNativeFromDll(
+        L"/tmp/openv_world_bridge.so", &launch, error, sizeof(error)) == 0);
+#endif
+    std::cout << "OpenV GTA engine native adapter: PASS\\n";
 }
