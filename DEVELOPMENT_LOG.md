@@ -259,7 +259,7 @@ Replaced the insecure UI prebuilt download with a source-only Windows build: loc
 - **Next:** verify and fix authoritative Windows real-DLL CI, squash PR commits to upstream title policy, merge only on successful checks. Then bind the entitled launcher to `OpenVGameAuthorityStartNativeFromDll` in actual game lifecycle and verify real two-PC gameplay; independently resolve lawful Windows runtime DLL closure.
 
 
-### 2026-10-26T07:15:00Z — CI access correction (PR #14 / private Server PR #29)
+### 2026-10-26T07:13:01Z — CI access correction (PR #14 / private Server PR #29)
 
 - **Verified blocker, not a speculative networking failure:** `bradjtrammell/openv-server` is **private** while `bradjtrammell/openv` is **public**. Windows adapter run `40283950299` Linux **PASS**, Windows **FAIL** at the attempted private Server checkout: `Repository not found` (GitHub token is scoped to the public repository). The initial Windows workflow file also failed to parse because a JS string replacement interpreted the PowerShell `$'` suffix; the full source was rebuilt and that error removed. No private repository source or binaries were copied to the public repo.
 - **Implemented safe direction:** public workflows now execute the new staging tests without attempting unauthorized private checkout; the **private Server PR #29** checks out pinned public adapter source, builds the actual native DLL and checks the staging ABI on Windows. This keeps private code and binaries inside private CI. The experimental public Windows GTA client still does **not** stage the private DLL; doing so needs a separately authorized secure handoff.
