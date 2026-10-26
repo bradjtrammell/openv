@@ -1,3 +1,10 @@
+## 2026-10-26 — full client and private integration follow-up
+
+- Experimental Windows client run `40410020384` **FAIL**: MSVC full client compilation **PASS**, first-party UI build **PASS**, VC143/CEF staging **PASS**, but the runtime static audit **FAIL** because owner-supplied Mono/FFmpeg manifest was empty; no lean runtime candidate was staged. The staging step reported missing `mono-2.0-sgen.dll`, `avutil-56.dll`, `swresample-3.dll`. The audit step's GitHub `conclusion=success` is due to `continue-on-error`; its command actually exited 1. Never interpret that job as a playable package.
+- Public PR full Cfx build run `40416947344` **FAIL**: Linux server compile step could not pull `ghcr.io/bradjtrammell/openv/fivem-builder-linux-alpine:latest` (`manifest unknown`); remaining matrix jobs cancelled at merge. Native GTA adapter CI `40416949938` **PASS** Linux GCC and Windows MSVC.
+- Private server PR #36 **MERGED** as `23d3bf5694b011f4eb01a858b142c7384ac856d6`, pinning public client `a992ac2b6f9afa33ad67272dc1846aaebc0a3a1c`. Private cross-repository CI `40417108159` **PASS** Linux and Windows, including the actual native authority DLL, signed Identity integration, Windows client kit and GTA adapter regressions. The private CI produced an `openv-windows-native-client-kit` artifact (ID `12694539522`), **not** a complete GTA V playable client.
+- Real GTA V launch, entitlement in-game, OneSync-owned entities, resources and licensed two-PC gameplay **NOT_RUN**. No release, deployment, spending, entitlement bypass or automation scheduling change.
+
 ## 2026-10-26 — final PR #28 native handoff verification
 
 - Public GTA client PR #28 **MERGED** as `a992ac2b6f9afa33ad67272dc1846aaebc0a3a1c`; squashed implementation source commit `608285ec3e9aa7548ade97c67c67a853ec782a57`. Five changed files: native C ABI header, production GTA adapter, GCC/MSVC native tests, integration documentation, and development log. The previous implementation commits are listed in the detailed entry below.
