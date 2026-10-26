@@ -15,6 +15,7 @@
 
 namespace {
 constexpr uint64_t PLAYER_PED_ID = 0xD80958FC74E988A6ULL;
+constexpr uint64_t GET_VEHICLE_PED_IS_IN = 0x9A9112A0FE9A4713ULL;
 constexpr uint64_t GET_ENTITY_COORDS = 0x3FEF770D40960D5AULL;
 constexpr uint64_t GET_ENTITY_HEADING = 0xE83D4F9BA2A38914ULL;
 constexpr uint64_t DOES_ENTITY_EXIST = 0x7239B21A38F536BAULL;
@@ -45,6 +46,8 @@ int moved = 0;
 int ticked = 0;
 bool loaded = false;
 bool allowed = true;
+int current_vehicle = 0;
+bool vehicle_lookup_available = true;
 int fail_mission_calls = 0;
 bool fail_delete = false;
 int session = 7;
@@ -61,6 +64,13 @@ void result(fx::ScriptContextBuffer& ctx, T value) { ctx.SetResult(value); }
 void register_natives() {
     using fx::ScriptEngine;
     ScriptEngine::handlers[PLAYER_PED_ID] = [](auto& c) { result(c, 10); };
+    ScriptEngine::handlers[GET_VEHICLE_PED_IS_IN] = [](auto& c) {
+        assert(c.template Arg<int>(0) == 10);
+        assert(c.template Arg<bool>(1) == false); // exclude previous vehicle
+        if (!vehicle_lookup_available)
+            throw std::runtime_error("vehicle native temporarily unavailable");
+        result(c, current_vehicle);
+    };
     ScriptEngine::handlers[DOES_ENTITY_EXIST] = [](auto& c) {
         result(c, objects.count(c.template Arg<int>(0)) != 0);
     };
@@ -253,6 +263,32 @@ int main() {
     openv_authority_position local{};
     assert(OpenVGameAuthorityReadLocal(nullptr, &local) == 1);
     assert(local.x == 1 && local.y == 2 && local.z == 3 && local.heading == 45);
+
+    // Actual seated vehicle transform, not the ped's fixed seat heading,
+    // must be submitted to the authenticated movement sampler.
+    objects[20] = {100, 200, 300, 175, 0x12345678u, true};
+    current_vehicle = 20;
+    assert(OpenVGameAuthorityReadLocal(nullptr, &local) == 1);
+    assert(local.x == 100 && local.y == 200 && local.z == 300 &&
+           local.heading == 175);
+    objects[20].heading = 210;
+    assert(OpenVGameAuthorityReadLocal(nullptr, &local) == 1);
+    assert(local.heading == 210);
+    // After exiting, GET_VEHICLE_PED_IS_IN(false) must not use the last car.
+    current_vehicle = 0;
+    assert(OpenVGameAuthorityReadLocal(nullptr, &local) == 1);
+    assert(local.x == 1 && local.heading == 45);
+    // The native can temporarily fail on game transitions; on-foot sampling
+    // remains available, and a deleted vehicle never supplies stale state.
+    vehicle_lookup_available = false;
+    assert(OpenVGameAuthorityReadLocal(nullptr, &local) == 1);
+    assert(local.x == 1);
+    vehicle_lookup_available = true;
+    current_vehicle = 20;
+    objects.erase(20);
+    assert(OpenVGameAuthorityReadLocal(nullptr, &local) == 1);
+    assert(local.x == 1);
+    current_vehicle = 0;
 
     uint64_t handle = 0;
     auto p = player(100);
