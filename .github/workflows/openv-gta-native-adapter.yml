@@ -5,6 +5,7 @@ on:
       - 'code/components/gta-net-five/include/OpenVAuthorityGame.h'
       - 'code/components/gta-net-five/src/OpenVAuthorityGame.cpp'
       - 'tests/openv_gta_native_adapter.cpp'
+      - 'tests/openv_gta_native_mock_bridge.cpp'
       - 'tests/native-gta-adapter-stubs/**'
       - '.github/workflows/openv-gta-native-adapter.yml'
   push:
@@ -13,6 +14,7 @@ on:
       - 'code/components/gta-net-five/include/OpenVAuthorityGame.h'
       - 'code/components/gta-net-five/src/OpenVAuthorityGame.cpp'
       - 'tests/openv_gta_native_adapter.cpp'
+      - 'tests/openv_gta_native_mock_bridge.cpp'
       - 'tests/native-gta-adapter-stubs/**'
       - '.github/workflows/openv-gta-native-adapter.yml'
 permissions:
@@ -48,6 +50,6 @@ jobs:
           if (-not $vs) { throw 'Visual Studio installation not found' }
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
           if (-not (Test-Path $vcvars)) { throw 'vcvars64.bat missing' }
-          $command = 'call "' + $vcvars + '" && cl /nologo /std:c++17 /EHsc /W4 /WX /Itests\native-gta-adapter-stubs /Icode\components\gta-net-five\include code\components\gta-net-five\src\OpenVAuthorityGame.cpp tests\openv_gta_native_adapter.cpp /Fe:openv-gta-native-adapter.exe && openv-gta-native-adapter.exe'
+          $command = 'call "' + $vcvars + '" && cl /nologo /LD /std:c++17 /EHsc /W4 /WX /Icode\components\gta-net-five\include tests\openv_gta_native_mock_bridge.cpp /Fe:openv-gta-native-mock.dll && cl /nologo /std:c++17 /EHsc /W4 /WX /Itests\native-gta-adapter-stubs /Icode\components\gta-net-five\include code\components\gta-net-five\src\OpenVAuthorityGame.cpp tests\openv_gta_native_adapter.cpp /Fe:openv-gta-native-adapter.exe && openv-gta-native-adapter.exe'
           cmd.exe /d /s /c $command
           if ($LASTEXITCODE -ne 0) { throw "MSVC native game adapter test failed: $LASTEXITCODE" }
