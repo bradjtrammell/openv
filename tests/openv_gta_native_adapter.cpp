@@ -267,6 +267,9 @@ int fake_stop(void* authority_session) {
     }
     if (fake.handle) {
         auto p = player(400);
+        // The authority pump withdraws the last rendered sequence, not the
+        // initial spawn sequence, including after interpolation.
+        if (fake.frames >= 2) p.sequence = 2;
         assert(fake.callbacks.despawn(fake.context, fake.handle, &p) == 1);
         fake.handle = 0;
     }
