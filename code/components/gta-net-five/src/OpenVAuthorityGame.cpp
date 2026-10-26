@@ -389,6 +389,7 @@ extern "C" int OpenVGameAuthoritySpawn(
     // A proxy must be under engine ownership AND inert to local AI/physics
     // before its handle is exposed to the authoritative replication pump.
     const bool replica_ready = mission_owned &&
+        same_engine_model(created, model) &&
         configure_remote_replica(created, e->kind);
     if (!replica_ready) {
         if (created_live) {
