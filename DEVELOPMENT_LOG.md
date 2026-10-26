@@ -1,11 +1,12 @@
 # OpenV development log
 
-## 2026-10-26 — remote GTA visual proxy collision/damage isolation (PR pending)
+## 2026-10-26 — remote GTA visual proxy collision/damage isolation (PR #20)
 
 - **Verified starting GitHub heads:** OpenV master `9ff5f3039aeb9eb2221444c6032a7c3cf0b68433`; Server main `c05cf50c32712d99f2c9731b4841861b6559a4ca`; Identity main `687cfcc31ffdb55b5a48dbc31532b1b8c4c9e419`; Admin master `87e3c1a926ffa2c7da2c5f1bf5b9508988a30dc2`; Data master `28b96c69606b337521589d1505da2a4d66b04eea`.
 - **Implementation:** GTA native local-only remote ped/vehicle replicas now require collision isolation and invincibility after freeze and before server spawn ACK. Failures remain unacknowledged and retain GTA handles for retryable cleanup; deterministic fault injection covers both native failures and deletion failures. Preserves existing authenticated native bridge, model allowlist, lifecycle and gameplay ownership checks.
 - **Changed files:** `code/components/gta-net-five/src/OpenVAuthorityGame.cpp`, `tests/openv_gta_native_adapter.cpp`, `docs/openv-native-gta-integration.md`, `DEVELOPMENT_LOG.md`.
-- **Verification:** exact-source CI **PENDING** at commit creation; licensed GTA V launch, real OneSync interoperability, resource execution and two-PC gameplay **NOT_RUN**. Experimental Windows client workflow last run `40320829082` **FAIL** (runtime readiness). No public release, deployment, spending or entitlement bypass.
+- **Verified implementation commit:** `085d46ee7a16a5cc991ce880e08958f1a9527e1d`; [PR #20](https://github.com/bradjtrammell/openv/pull/20) **MERGED** as `84a480c23f8fec458d4181910d295bc1cc7a590c`.
+- **Verification:** [exact-source GTA adapter CI 40328676393](https://github.com/bradjtrammell/openv/actions/runs/40328676393) **PASS** both Windows MSVC and Ubuntu GCC production adapter compilation/execution and native bridge staging regression tests; PR details validation **PASS** in [40328676809](https://github.com/bradjtrammell/openv/actions/runs/40328676809). Full RedM/FiveM/Server matrix **IN_PROGRESS** at merge. Licensed GTA V launch, real OneSync interoperability, resource execution and two-PC gameplay **NOT_RUN**. Experimental Windows client workflow [40320829082](https://github.com/bradjtrammell/openv/actions/runs/40320829082) **FAIL** on unresolved Mono, FFmpeg and Steamworks runtime dependencies. No public release, deployment, spending or entitlement bypass.
 - **Next priority:** authorized launcher handoff and GTA lifecycle activation, lawful Mono/FFmpeg/Steamworks runtime provenance, OneSync network ownership and licensed two-PC gameplay.
 
 
