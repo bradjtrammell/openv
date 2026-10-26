@@ -30,6 +30,8 @@ constexpr uint64_t SET_ENTITY_COORDS_NO_OFFSET = 0x239A3351AC1DA385ULL;
 constexpr uint64_t SET_ENTITY_HEADING = 0x8E2530AA8ADA980EULL;
 constexpr uint64_t SET_ENTITY_AS_MISSION_ENTITY = 0xAD738C3085FE7E11ULL;
 constexpr uint64_t FREEZE_ENTITY_POSITION = 0x428CA6DBD1094446ULL;
+constexpr uint64_t SET_ENTITY_COLLISION = 0x1A9205C1B9EE827FULL;
+constexpr uint64_t SET_ENTITY_INVINCIBLE = 0x3882114BDE571AD4ULL;
 constexpr uint64_t SET_BLOCKING_OF_NON_TEMPORARY_EVENTS = 0x9F8AA94D6D97DBF4ULL;
 constexpr uint64_t DELETE_ENTITY = 0xAE3CBE5BF394C9C9ULL;
 constexpr uint64_t SET_MODEL_AS_NO_LONGER_NEEDED = 0xE532F5D78798DAABULL;
@@ -40,6 +42,8 @@ struct Object {
     bool vehicle;
     bool frozen = false;
     bool ai_blocked = false;
+    bool collision_enabled = true;
+    bool invincible = false;
 };
 std::unordered_map<int, Object> objects{{10, {1, 2, 3, 45, 0, false}}};
 int next_handle = 10;
@@ -54,6 +58,8 @@ int current_vehicle = 0;
 bool vehicle_lookup_available = true;
 int fail_mission_calls = 0;
 int fail_freeze_calls = 0;
+int fail_collision_calls = 0;
+int fail_invincible_calls = 0;
 int fail_ai_block_calls = 0;
 bool fail_delete = false;
 int session = 7;
@@ -137,6 +143,23 @@ void register_natives() {
             throw std::runtime_error("simulated GTA freeze failure");
         }
         objects.at(c.template Arg<int>(0)).frozen = c.template Arg<bool>(1);
+    };
+    ScriptEngine::handlers[SET_ENTITY_COLLISION] = [](auto& c) {
+        if (fail_collision_calls > 0) {
+            --fail_collision_calls;
+            throw std::runtime_error("simulated GTA collision configuration failure");
+        }
+        assert(c.template Arg<bool>(2) == false);
+        objects.at(c.template Arg<int>(0)).collision_enabled =
+            c.template Arg<bool>(1);
+    };
+    ScriptEngine::handlers[SET_ENTITY_INVINCIBLE] = [](auto& c) {
+        if (fail_invincible_calls > 0) {
+            --fail_invincible_calls;
+            throw std::runtime_error("simulated GTA invincibility configuration failure");
+        }
+        objects.at(c.template Arg<int>(0)).invincible =
+            c.template Arg<bool>(1);
     };
     ScriptEngine::handlers[SET_BLOCKING_OF_NON_TEMPORARY_EVENTS] = [](auto& c) {
         if (fail_ai_block_calls > 0) {
@@ -318,6 +341,7 @@ int main() {
     assert(OpenVGameAuthoritySpawn(nullptr, &p, &handle) == 1);
     assert(handle == 11 && created == 1);
     assert(objects.at(11).frozen && objects.at(11).ai_blocked);
+    assert(!objects.at(11).collision_enabled && objects.at(11).invincible);
     uint64_t duplicate = 0;
     assert(OpenVGameAuthoritySpawn(nullptr, &p, &duplicate) == 0);
     assert(created == 1 && duplicate == 0);
@@ -334,6 +358,8 @@ int main() {
     assert(objects.at(int(vehicle_handle)).vehicle);
     assert(objects.at(int(vehicle_handle)).frozen);
     assert(!objects.at(int(vehicle_handle)).ai_blocked);
+    assert(!objects.at(int(vehicle_handle)).collision_enabled);
+    assert(objects.at(int(vehicle_handle)).invincible);
     v.sequence = 2;
     v.heading = 120;
     assert(OpenVGameAuthorityMove(nullptr, vehicle_handle, &v) == 1);
@@ -405,6 +431,27 @@ int main() {
     assert(objects.at(int(orphan_handle)).frozen);
     assert(objects.at(int(orphan_handle)).ai_blocked);
     assert(OpenVGameAuthorityDespawn(nullptr, orphan_handle, &unstable) == 1);
+
+    // Collision and invincibility are gameplay invariants, not optional
+    // cosmetic calls: failed native handlers must not ACK remote entities.
+    for (int failure = 0; failure < 2; ++failure) {
+        if (failure == 0) fail_collision_calls = 1;
+        else fail_invincible_calls = 1;
+        const int before = created;
+        const int removed = deleted;
+        fail_delete = true;
+        assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 0);
+        assert(orphan_handle == 0 && created == before + 1);
+        // The failed spawn remains tracked until its GTA handle is deleted.
+        assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 0);
+        assert(created == before + 1 && deleted == removed);
+        fail_delete = false;
+        assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 1);
+        assert(created == before + 2 && deleted == removed + 1);
+        assert(!objects.at(int(orphan_handle)).collision_enabled);
+        assert(objects.at(int(orphan_handle)).invincible);
+        assert(OpenVGameAuthorityDespawn(nullptr, orphan_handle, &unstable) == 1);
+    }
 
     fail_ai_block_calls = 1;
     const int ai_created = created;

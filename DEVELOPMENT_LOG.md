@@ -1,5 +1,14 @@
 # OpenV development log
 
+## 2026-10-26 — remote GTA visual proxy collision/damage isolation (PR pending)
+
+- **Verified starting GitHub heads:** OpenV master `9ff5f3039aeb9eb2221444c6032a7c3cf0b68433`; Server main `c05cf50c32712d99f2c9731b4841861b6559a4ca`; Identity main `687cfcc31ffdb55b5a48dbc31532b1b8c4c9e419`; Admin master `87e3c1a926ffa2c7da2c5f1bf5b9508988a30dc2`; Data master `28b96c69606b337521589d1505da2a4d66b04eea`.
+- **Implementation:** GTA native local-only remote ped/vehicle replicas now require collision isolation and invincibility after freeze and before server spawn ACK. Failures remain unacknowledged and retain GTA handles for retryable cleanup; deterministic fault injection covers both native failures and deletion failures. Preserves existing authenticated native bridge, model allowlist, lifecycle and gameplay ownership checks.
+- **Changed files:** `code/components/gta-net-five/src/OpenVAuthorityGame.cpp`, `tests/openv_gta_native_adapter.cpp`, `docs/openv-native-gta-integration.md`, `DEVELOPMENT_LOG.md`.
+- **Verification:** exact-source CI **PENDING** at commit creation; licensed GTA V launch, real OneSync interoperability, resource execution and two-PC gameplay **NOT_RUN**. Experimental Windows client workflow last run `40320829082` **FAIL** (runtime readiness). No public release, deployment, spending or entitlement bypass.
+- **Next priority:** authorized launcher handoff and GTA lifecycle activation, lawful Mono/FFmpeg/Steamworks runtime provenance, OneSync network ownership and licensed two-PC gameplay.
+
+
 ## 2026-10-26T12:07:00Z–12:13:06Z — native GTA remote replica physics/AI stabilization (PR #19)
 
 - **Verified starting refs:** OpenV master `f5b1e62fbe38f56f040d34f8062b207e70774740`; Server main `c05cf50c32712d99f2c9731b4841861b6559a4ca`; Identity main `687cfcc31ffdb55b5a48dbc31532b1b8c4c9e419`; Admin master `87e3c1a926ffa2c7da2c5f1bf5b9508988a30dc2`; Data master `28b96c69606b337521589d1505da2a4d66b04eea`. Inspected actual production GTA adapter/header/tests, private server C ABI/session source, native bridge artifact metadata, previous development logs, full Windows client workflow and CI job logs. No previously missing ZIP or local commits assumed recovered.

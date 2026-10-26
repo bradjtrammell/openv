@@ -45,6 +45,8 @@ constexpr uint64_t SET_ENTITY_COORDS_NO_OFFSET = 0x239A3351AC1DA385ULL;
 constexpr uint64_t SET_ENTITY_HEADING = 0x8E2530AA8ADA980EULL;
 constexpr uint64_t SET_ENTITY_AS_MISSION_ENTITY = 0xAD738C3085FE7E11ULL;
 constexpr uint64_t FREEZE_ENTITY_POSITION = 0x428CA6DBD1094446ULL;
+constexpr uint64_t SET_ENTITY_COLLISION = 0x1A9205C1B9EE827FULL;
+constexpr uint64_t SET_ENTITY_INVINCIBLE = 0x3882114BDE571AD4ULL;
 constexpr uint64_t SET_BLOCKING_OF_NON_TEMPORARY_EVENTS = 0x9F8AA94D6D97DBF4ULL;
 constexpr uint64_t DELETE_ENTITY = 0xAE3CBE5BF394C9C9ULL;
 constexpr uint64_t SET_MODEL_AS_NO_LONGER_NEEDED = 0xE532F5D78798DAABULL;
@@ -211,7 +213,14 @@ void release_model(uint32_t model) {
 // authenticated snapshots. A failure is an unacknowledged spawn, not a live
 // authority handle. The actual OneSync network-entity path remains separate.
 bool configure_remote_replica(int handle, uint32_t kind) {
+    // Numeric replicas are local visual projections of server authority,
+    // not interactive network-owned GTA entities. Freeze before disabling
+    // collisions so they cannot fall through the world or block the player.
     if (!native_void(FREEZE_ENTITY_POSITION, handle, true)) return false;
+    if (!native_void(SET_ENTITY_COLLISION, handle, false, false)) return false;
+    // Until the authoritative damage/resource protocol is implemented, local
+    // ambient damage must not silently destroy a remote player's replica.
+    if (!native_void(SET_ENTITY_INVINCIBLE, handle, true)) return false;
     if (kind != OPENV_AUTHORITY_VEHICLE &&
         !native_void(SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, handle, true))
         return false;

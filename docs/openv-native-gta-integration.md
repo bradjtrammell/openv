@@ -234,3 +234,20 @@ The GTA main-thread local-position callback now uses `GET_VEHICLE_PED_IS_IN(ped,
 ## Local remote-replica physics and AI ownership (2026-10-26)
 
 Authenticated numeric remote player/ped and vehicle replicas are currently **local-only GTA entities**, not OneSync network entities. After a successful GTA CREATE_PED/CREATE_VEHICLE and mission-entity acquisition, the game-thread adapter now freezes the entity so GTA physics cannot drift it between authoritative snapshots. Player/ped proxies also block non-temporary GTA AI events so ambient behavior cannot override server movement. `SET_ENTITY_COORDS_NO_OFFSET` and `SET_ENTITY_HEADING` continue applying authenticated transforms to frozen replicas. Failure to configure either native is a **failed spawn**, never an ACK: the handle is deleted or retained for retryable cleanup if deletion fails. This does not add remote driver seats, animation synchronization, collisions, or OneSync interoperability. Deterministic GCC/MSVC tests exercise successful ped/vehicle setup and both failure paths; actual GTA V gameplay remains NOT_RUN.
+
+
+## Local proxy collision and damage isolation (2026-10-26)
+
+The current numeric GTA entities are **local visual replicas**, not network-owned
+OneSync entities. A remote ped or vehicle is frozen, made non-colliding with the
+local world and invincible before the server receives a successful spawn ACK.
+The order is intentional: freezing first prevents the local proxy from falling
+through world geometry after collision is disabled. Remote peds also have
+ambient AI events blocked. Only authenticated server transforms move them.
+This prevents a local-only proxy from blocking the real player, colliding with
+traffic or being silently destroyed by unsynchronized local damage. It does
+**not** implement damage, driving, vehicle seats or OneSync network ownership.
+If any GTA native handler fails, the spawn is unacknowledged; its handle is
+removed or retained for retryable cleanup without duplicating the entity.
+Deterministic GTA-native tests inject both new native failures and deletion
+failures, then verify no ACK, stable handle tracking and recovery.
