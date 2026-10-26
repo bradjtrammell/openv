@@ -304,3 +304,25 @@ capability or ticket is exposed to the UI or a command line. This improves
 remote-player motion and engine entity load **after** a legitimate host
 activates the bridge; it does not provide the missing launcher handoff,
 OneSync network ownership, game assets or real two-PC verification.
+
+
+## Bounded GTA main-frame entity creation (2026-10-26)
+
+The Cfx GTA native adapter now limits synchronous remote `CREATE_PED` and
+`CREATE_VEHICLE` attempts to **eight per `OnMainGameFrame`**. A large
+authenticated snapshot therefore cannot attempt hundreds of GTA allocations,
+mission-ownership changes, physics freezes and collision changes on one
+render frame. The budget is charged before the engine CREATE native, even
+when creation fails. It resets on each actual main-game frame; the loading
+watchdog `OnGameFrame` does not replenish it.
+
+Excess entities return the existing **not yet spawned** result. The native
+authority pump retries those snapshots on later frames, preserving already
+spawned proxies and session authentication. Model-not-loaded requests remain
+coalesced; revocation and despawn cleanup are **not** budget-limited. The
+game-thread adapter regression executes a 12-player burst, verifies 8+4
+creation across frames, rejects duplicate retries and confirms full cleanup.
+
+This is frame-time protection for existing local-only GTA replicas. It does
+not add true OneSync network ownership, automatic lawful game launch, or
+licensed two-PC gameplay verification.

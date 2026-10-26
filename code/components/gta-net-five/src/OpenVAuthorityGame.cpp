@@ -82,6 +82,12 @@ openv_game_authority_check authorization_callback = nullptr;
 void* authorization_context = nullptr;
 bool activated = false;
 bool inside_game_frame = false;
+// GTA model creation and ownership setup are synchronous engine-native calls.
+// Limit work per main-game frame so a large authenticated entity snapshot
+// cannot monopolize rendering. Unacknowledged spawns are retried by the
+// authority pump on subsequent frames, just like pending model loads.
+constexpr uint32_t MAX_SPAWNS_PER_GAME_FRAME = 8;
+uint32_t spawns_this_frame = 0;
 openv_game_native_api native_owner_api{};
 void* native_owner_session = nullptr;
 // The game binding clears game_thread on successful unbind. Preserve the
@@ -405,6 +411,11 @@ extern "C" int OpenVGameAuthoritySpawn(
     if (e->kind != OPENV_AUTHORITY_PLAYER &&
         !allowed_models.count(model_key(e->kind, model))) return 0;
     if (!model_ready(e->kind, model)) return 0;
+    if (inside_game_frame && spawns_this_frame >= MAX_SPAWNS_PER_GAME_FRAME)
+        return 0;
+    // Charge the budget before GTA CREATE_*: failed native attempts are
+    // expensive too. Direct host-side tests outside a frame remain unaffected.
+    if (inside_game_frame) ++spawns_this_frame;
 
     // Allocate tracking before calling CREATE_PED/CREATE_VEHICLE. A failed
     // map allocation must never leave an untracked live GTA entity.
@@ -794,6 +805,7 @@ static InitFunction openvNativeGameFrame([] {
         // The native authority tick only drains an authenticated worker
         // mailbox and dispatches engine callbacks; it performs no network I/O.
         // Keep ticking after revocation so remote handles can be withdrawn.
+        spawns_this_frame = 0;
         inside_game_frame = true;
         try { (void)tick_callback(bound_session, &frame); }
         catch (...) {
