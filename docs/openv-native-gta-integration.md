@@ -1,3 +1,28 @@
+## Main-game-thread readiness and trusted launcher handoff (2026-10-26)
+
+The engine component now exports `OpenVGameAuthorityMainThreadReady()`.
+It returns 1 **only after the first actual `OnMainGameFrame` event and only
+when called from the thread that delivered that event**. The loading-screen
+watchdog's `OnGameFrame` does not establish readiness. The first observed
+main-frame thread is pinned for the process lifetime; a later foreign-thread
+event cannot steal ownership. Readiness probes synchronize thread identity
+and do not touch bridge credentials, game entities or network sockets.
+
+`OpenVGameAuthorityBind`, `OpenVGameAuthorityStartNative` and Windows
+`OpenVGameAuthorityStartNativeFromDll` now reject premature or off-thread
+activation **before** creating a native session or loading a DLL. A trusted
+launcher must retain the private capability and retry from the established
+main game thread **outside the frame callback**. This makes an incorrectly
+scheduled launcher fail explicitly instead of reporting a successful
+authenticated join whose native frame callbacks never execute.
+
+This change is a game-thread lifecycle prerequisite, not a launcher
+implementation. It does not acquire signed tickets, perform entitlement
+checks, install a GTA hook, create OneSync network entities or demonstrate
+licensed two-player gameplay. The deterministic native adapter tests fire
+the main and watchdog events independently and attempt foreign-thread
+binding and startup. Actual GTA V launch remains NOT_RUN.
+
 # OpenV GTA V native authority adapter
 
 This is a **real Cfx/GTA V engine-native callback implementation**, compiled as part
