@@ -210,3 +210,19 @@ actual GTA V gameplay tests.
 ## GTA main-thread frame dispatch (2026-10-26)
 
 The native adapter now includes the actual `rage-nutsnbolts-five/include/nutsnbolts.h` event declaration rather than depending on a test-only declaration. It subscribes to `OnMainGameFrame`, **not** `OnGameFrame`: the latter can be fired by the Cfx loading-screen watchdog on a non-main thread. Only the main-thread event may sample GTA ped state, spawn/move/despawn entities, and drain the authenticated native authority mailbox. Deterministic regression tests independently fire both events and require the watchdog event to leave authority state unchanged. This corrects the `C2065: 'OnGameFrame': undeclared identifier` failure observed in the full Windows MSBuild job 40290304089; actual GTA launch remains NOT_RUN.
+
+## Retry-safe native owner teardown (2026-10-26)
+
+Native teardown is a three-stage transaction on the GTA main thread: stop
+worker/session activity, unbind GTA callbacks after tracked handles are gone,
+and destroy the native session. Each completed stage is remembered until the
+entire transaction succeeds. If `openv_authority_stop` fails, the next
+`OpenVGameAuthorityStopNative` retries stop. If callback unbind or native
+destroy fails *after* stop succeeded, retrying never calls stop a second
+time against an already-stopped session. The DLL remains loaded until every
+stage succeeds. Start remains unavailable during partial teardown.
+
+Deterministic GTA adapter tests inject a failed native stop and a failed
+native destroy, assert that the correct stage alone is retried, and verify
+that a fresh session can start after successful cleanup. These tests do not
+exercise an actual GTA V process or prove OneSync interoperability.
