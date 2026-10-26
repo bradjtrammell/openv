@@ -1,0 +1,358 @@
+/*
+ * Copyright (c) OpenV contributors. See the root LICENSE.
+ * GTA V/Cfx engine adapter for authenticated numeric OpenV entities.
+ *
+ * This component does not create sessions, accept tickets, open sockets,
+ * bypass game ownership, or implement OneSync wire replication. An entitled
+ * launcher owns the private bridge and binds its authenticated native session.
+ * Engine natives are called exclusively from the GTA game-frame thread.
+ */
+#include <StdInc.h>
+#include <Hooking.h>
+#include <ScriptEngine.h>
+#include <OpenVAuthorityGame.h>
+
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace {
+constexpr uint64_t PLAYER_PED_ID = 0xD80958FC74E988A6ULL;
+constexpr uint64_t GET_ENTITY_COORDS = 0x3FEF770D40960D5AULL;
+constexpr uint64_t GET_ENTITY_HEADING = 0xE83D4F9BA2A38914ULL;
+constexpr uint64_t DOES_ENTITY_EXIST = 0x7239B21A38F536BAULL;
+constexpr uint64_t IS_MODEL_IN_CDIMAGE = 0x35B9E0803292B641ULL;
+constexpr uint64_t IS_MODEL_A_PED = 0x75816577FEA6DAD5ULL;
+constexpr uint64_t IS_MODEL_A_VEHICLE = 0x19AAC8F07BFEC53EULL;
+constexpr uint64_t REQUEST_MODEL = 0x963D27A58DF860ACULL;
+constexpr uint64_t HAS_MODEL_LOADED = 0x98A4EB5D89A0C952ULL;
+constexpr uint64_t CREATE_PED = 0xD49F9B0955C367DEULL;
+constexpr uint64_t CREATE_VEHICLE = 0xAF35D0D2583051B0ULL;
+constexpr uint64_t SET_ENTITY_COORDS_NO_OFFSET = 0x239A3351AC1DA385ULL;
+constexpr uint64_t SET_ENTITY_HEADING = 0x8E2530AA8ADA980EULL;
+constexpr uint64_t SET_ENTITY_AS_MISSION_ENTITY = 0xAD738C3085FE7E11ULL;
+constexpr uint64_t DELETE_ENTITY = 0xAE3CBE5BF394C9C9ULL;
+constexpr uint64_t SET_MODEL_AS_NO_LONGER_NEEDED = 0xE532F5D78798DAABULL;
+constexpr uint32_t FREEMODE_MALE = 0x705E61F2u;
+
+struct Tracked {
+    uint32_t kind;
+    uint32_t model;
+    uint32_t bucket;
+    int handle;
+};
+
+std::unordered_map<uint64_t, Tracked> entities;
+std::unordered_set<uint64_t> allowed_models;
+uint64_t model_key(uint32_t kind, uint32_t model) {
+    return (uint64_t(kind) << 32) | model;
+}
+std::thread::id game_thread;
+void* bound_session = nullptr;
+openv_game_authority_tick tick_callback = nullptr;
+openv_game_authority_check authorization_callback = nullptr;
+void* authorization_context = nullptr;
+bool activated = false;
+
+bool on_game_thread() {
+    return game_thread != std::thread::id{} &&
+           game_thread == std::this_thread::get_id();
+}
+
+bool authorized() {
+    if (!on_game_thread() || !bound_session || !authorization_callback)
+        return false;
+    try { return authorization_callback(authorization_context) == 1; }
+    catch (...) { return false; }
+}
+
+bool transform_valid(const openv_authority_entity& entity) {
+    return entity.id != 0 && entity.sequence != 0 &&
+        (entity.kind == OPENV_AUTHORITY_PLAYER ||
+         entity.kind == OPENV_AUTHORITY_PED ||
+         entity.kind == OPENV_AUTHORITY_VEHICLE) &&
+        std::isfinite(entity.x) && std::isfinite(entity.y) &&
+        std::isfinite(entity.z) && std::isfinite(entity.heading) &&
+        std::abs(entity.x) <= 100000 && std::abs(entity.y) <= 100000 &&
+        std::abs(entity.z) <= 100000 &&
+        entity.heading >= 0 && entity.heading < 360;
+}
+
+template<typename R, typename... Args>
+bool native_result(uint64_t hash, R& result, Args... args) {
+    try {
+        const auto handler = fx::ScriptEngine::GetNativeHandler(hash);
+        if (!handler) return false;
+        result = FxNativeInvoke::Invoke<R>(handler, args...);
+        return true;
+    } catch (...) { return false; }
+}
+
+template<typename... Args>
+bool native_void(uint64_t hash, Args... args) {
+    try {
+        const auto handler = fx::ScriptEngine::GetNativeHandler(hash);
+        if (!handler) return false;
+        FxNativeInvoke::Invoke<void>(handler, args...);
+        return true;
+    } catch (...) { return false; }
+}
+
+bool exists(int handle) {
+    bool found = false;
+    return handle > 0 && native_result(DOES_ENTITY_EXIST, found, handle) && found;
+}
+
+bool read_position(int handle, openv_authority_position& out) {
+    try {
+        const auto coords = fx::ScriptEngine::GetNativeHandler(GET_ENTITY_COORDS);
+        if (!coords || !exists(handle)) return false;
+        fx::ScriptContextBuffer ctx;
+        ctx.Push(handle);
+        ctx.Push(true);
+        coords(ctx);
+        // Cfx ScriptEngine expands GTA's vector result into the first three
+        // float slots of the native result buffer.
+        const auto* xyz = static_cast<const uint64_t*>(ctx.GetResultBuffer());
+        float components[3]{};
+        for (int i = 0; i < 3; ++i)
+            std::memcpy(&components[i], &xyz[i], sizeof(float));
+        float heading = 0;
+        if (!native_result(GET_ENTITY_HEADING, heading, handle)) return false;
+        out = {components[0], components[1], components[2], heading};
+        return std::isfinite(out.x) && std::isfinite(out.y) &&
+            std::isfinite(out.z) && std::isfinite(out.heading) &&
+            std::abs(out.x) <= 100000 && std::abs(out.y) <= 100000 &&
+            std::abs(out.z) <= 100000 &&
+            out.heading >= 0 && out.heading < 360;
+    } catch (...) { return false; }
+}
+
+bool apply_transform(int handle, const openv_authority_entity& e) {
+    if (!exists(handle)) return false;
+    const auto position = fx::ScriptEngine::GetNativeHandler(SET_ENTITY_COORDS_NO_OFFSET);
+    const auto heading = fx::ScriptEngine::GetNativeHandler(SET_ENTITY_HEADING);
+    if (!position || !heading) return false;
+    openv_authority_position before{};
+    if (!read_position(handle, before)) return false;
+    try {
+        FxNativeInvoke::Invoke<void>(position, handle, float(e.x), float(e.y),
+            float(e.z), false, false, false);
+        FxNativeInvoke::Invoke<void>(heading, handle, float(e.heading));
+        return true;
+    } catch (...) {
+        // Best-effort compensation if a native fails between the two writes.
+        // If the game refuses rollback, the authority pump will withdraw the
+        // session and retry entity cleanup instead of ACKing this frame.
+        try {
+            FxNativeInvoke::Invoke<void>(position, handle, float(before.x),
+                float(before.y), float(before.z), false, false, false);
+            FxNativeInvoke::Invoke<void>(heading, handle, float(before.heading));
+        } catch (...) {}
+        return false;
+    }
+}
+
+bool model_ready(uint32_t kind, uint32_t model) {
+    bool present = false;
+    bool correct_kind = false;
+    if (!model || !native_result(IS_MODEL_IN_CDIMAGE, present, model) || !present)
+        return false;
+    const uint64_t type_native =
+        kind == OPENV_AUTHORITY_VEHICLE ? IS_MODEL_A_VEHICLE : IS_MODEL_A_PED;
+    if (!native_result(type_native, correct_kind, model) || !correct_kind)
+        return false;
+    bool loaded = false;
+    if (!native_result(HAS_MODEL_LOADED, loaded, model)) return false;
+    if (loaded) return true;
+    // Model request is the only side effect on a deferred spawn. No game
+    // entity is created until the model has finished streaming.
+    native_void(REQUEST_MODEL, model);
+    return false;
+}
+
+void release_model(uint32_t model) {
+    (void)native_void(SET_MODEL_AS_NO_LONGER_NEEDED, model);
+}
+
+bool remove_entity(int handle) {
+    if (!exists(handle)) return true;
+    if (!native_void(SET_ENTITY_AS_MISSION_ENTITY, handle, true, true))
+        return false;
+    int to_delete = handle;
+    if (!native_void(DELETE_ENTITY, &to_delete)) return false;
+    return !exists(handle);
+}
+
+bool matching(const Tracked& entry, uint64_t handle,
+              const openv_authority_entity& e) {
+    return entry.handle > 0 && uint64_t(entry.handle) == handle &&
+           entry.kind == e.kind &&
+           entry.model == (e.kind == OPENV_AUTHORITY_PLAYER ?
+                           FREEMODE_MALE : e.model) &&
+           entry.bucket == e.bucket;
+}
+} // namespace
+
+extern "C" uint32_t OpenVGameAuthorityAbiVersion(void) {
+    return OPENV_AUTHORITY_ABI_VERSION;
+}
+
+extern "C" int OpenVGameAuthorityBind(
+    void* session, openv_game_authority_tick tick,
+    openv_game_authority_check check, void* context) {
+    if (!session || !tick || !check || bound_session || !entities.empty())
+        return 0;
+    // Bind on the eventual GTA game-frame thread. If the frame thread differs,
+    // the callback refuses to dispatch and the host must unbind safely.
+    game_thread = std::this_thread::get_id();
+    bound_session = session;
+    tick_callback = tick;
+    authorization_callback = check;
+    authorization_context = context;
+    activated = false;
+    allowed_models.clear();
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityAllowModel(uint32_t kind, uint32_t model) {
+    if (!on_game_thread() || !bound_session || activated || !authorized() ||
+        (kind != OPENV_AUTHORITY_PED && kind != OPENV_AUTHORITY_VEHICLE) ||
+        !model || allowed_models.size() >= 256) return 0;
+    bool present = false;
+    bool valid_type = false;
+    const uint64_t type_native = kind == OPENV_AUTHORITY_PED ?
+        IS_MODEL_A_PED : IS_MODEL_A_VEHICLE;
+    if (!native_result(IS_MODEL_IN_CDIMAGE, present, model) || !present ||
+        !native_result(type_native, valid_type, model) || !valid_type)
+        return 0;
+    return allowed_models.insert(model_key(kind, model)).second ? 1 : 0;
+}
+
+extern "C" int OpenVGameAuthorityActivate(void* session) {
+    if (!on_game_thread() || session != bound_session || activated ||
+        !authorized()) return 0;
+    activated = true;
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityDeactivate(void* session) {
+    if (!on_game_thread() || session != bound_session || !activated) return 0;
+    activated = false;
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityUnbind(void* session) {
+    if (!on_game_thread() || session != bound_session || activated || !entities.empty())
+        return 0;
+    activated = false;
+    bound_session = nullptr;
+    tick_callback = nullptr;
+    authorization_callback = nullptr;
+    authorization_context = nullptr;
+    allowed_models.clear();
+    game_thread = std::thread::id{};
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityAuthorized(void*) {
+    return authorized() ? 1 : 0;
+}
+
+extern "C" int OpenVGameAuthoritySpawn(
+    void*, const openv_authority_entity* e, uint64_t* handle) {
+    if (handle) *handle = 0;
+    if (!authorized() || !activated || !e || !handle ||
+        !transform_valid(*e) || entities.count(e->id)) return 0;
+    const uint32_t model = e->kind == OPENV_AUTHORITY_PLAYER ?
+        FREEMODE_MALE : e->model;
+    if (e->kind == OPENV_AUTHORITY_PLAYER && e->model != 0)
+        return 0;
+    if (e->kind != OPENV_AUTHORITY_PLAYER &&
+        !allowed_models.count(model_key(e->kind, model))) return 0;
+    if (!model_ready(e->kind, model)) return 0;
+
+    // Allocate tracking before calling CREATE_PED/CREATE_VEHICLE. A failed
+    // map allocation must never leave an untracked live GTA entity.
+    std::unordered_map<uint64_t, Tracked>::iterator entry;
+    try {
+        const auto inserted = entities.emplace(e->id,
+            Tracked{e->kind, model, e->bucket, 0});
+        if (!inserted.second) return 0;
+        entry = inserted.first;
+    } catch (...) { return 0; }
+
+    int created = 0;
+    bool called = false;
+    if (e->kind == OPENV_AUTHORITY_VEHICLE) {
+        called = native_result(CREATE_VEHICLE, created, model, float(e->x),
+            float(e->y), float(e->z), float(e->heading), false, false);
+    } else {
+        called = native_result(CREATE_PED, created, 4, model, float(e->x),
+            float(e->y), float(e->z), float(e->heading), false, false);
+    }
+    release_model(model);
+    if (!called || !exists(created)) {
+        if (created > 0) (void)remove_entity(created);
+        entities.erase(entry);
+        return 0;
+    }
+    entry->second.handle = created;
+    *handle = uint64_t(created);
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityMove(
+    void*, uint64_t handle, const openv_authority_entity* e) {
+    if (!authorized() || !activated || !e || !transform_valid(*e))
+        return 0;
+    const auto it = entities.find(e->id);
+    if (it == entities.end() || !matching(it->second, handle, *e))
+        return 0;
+    return apply_transform(it->second.handle, *e) ? 1 : 0;
+}
+
+extern "C" int OpenVGameAuthorityDespawn(
+    void*, uint64_t handle, const openv_authority_entity* e) {
+    // Cleanup must remain possible after admission revocation.
+    if (!on_game_thread() || !e || !transform_valid(*e))
+        return 0;
+    const auto it = entities.find(e->id);
+    if (it == entities.end()) return 1;
+    if (!matching(it->second, handle, *e)) return 0;
+    if (!remove_entity(it->second.handle)) return 0;
+    entities.erase(it);
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityReadLocal(
+    void*, openv_authority_position* position) {
+    if (!authorized() || !activated || !position) return 0;
+    int ped = 0;
+    if (!native_result(PLAYER_PED_ID, ped) || !exists(ped))
+        return 0;
+    openv_authority_position sample{};
+    if (!read_position(ped, sample)) return 0;
+    *position = sample;
+    return 1;
+}
+
+static InitFunction openvNativeGameFrame([] {
+    OnGameFrame.Connect([] {
+        if (!bound_session || !activated || !on_game_thread() || !tick_callback)
+            return;
+        openv_authority_frame frame{};
+        frame.struct_size = sizeof(frame);
+        // The native authority tick only drains an authenticated worker
+        // mailbox and dispatches engine callbacks; it performs no network I/O.
+        // Keep ticking after revocation so remote handles can be withdrawn.
+        try { (void)tick_callback(bound_session, &frame); }
+        catch (...) {
+            // Never allow a C++ exception to escape the GTA game loop.
+        }
+    });
+});
