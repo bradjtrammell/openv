@@ -20,6 +20,8 @@ struct MockSession {
     uint64_t sequence = 1;
     int frames = 0;
     bool started = false;
+    bool motion_configured = false;
+    bool interest_configured = false;
 };
 
 extern "C" {
@@ -53,11 +55,28 @@ __declspec(dllexport) int openv_authority_configure_position_source(
     session->reader_context = context;
     return 1;
 }
+__declspec(dllexport) int openv_authority_configure_motion(
+    void* pointer, uint32_t interpolation_ms, double snap_distance) {
+    auto* session = static_cast<MockSession*>(pointer);
+    if (!session || session->started || interpolation_ms != 120 ||
+        snap_distance != 80.0 || session->motion_configured) return 0;
+    session->motion_configured = true;
+    return 1;
+}
+__declspec(dllexport) int openv_authority_configure_interest(
+    void* pointer, double radius, double hysteresis) {
+    auto* session = static_cast<MockSession*>(pointer);
+    if (!session || session->started || radius != 350.0 ||
+        hysteresis != 50.0 || session->interest_configured) return 0;
+    session->interest_configured = true;
+    return 1;
+}
 __declspec(dllexport) int openv_authority_start(
     void* pointer, double x, double y, double z, double heading,
     char* error, size_t capacity) {
     auto* session = static_cast<MockSession*>(pointer);
-    if (!session || !session->reader || !error || !capacity ||
+    if (!session || !session->reader || !session->motion_configured ||
+        !session->interest_configured || !error || !capacity ||
         x != 1 || y != 2 || z != 3 || heading != 45 ||
         session->callbacks.authorized(session->context) != 1)
         return 0;
