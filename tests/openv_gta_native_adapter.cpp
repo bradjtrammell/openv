@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #ifdef _WIN32
@@ -43,6 +44,8 @@ int moved = 0;
 int ticked = 0;
 bool loaded = false;
 bool allowed = true;
+int fail_mission_calls = 0;
+bool fail_delete = false;
 int session = 7;
 
 int authorized(void*) { return allowed ? 1 : 0; }
@@ -105,8 +108,15 @@ void register_natives() {
     ScriptEngine::handlers[SET_ENTITY_HEADING] = [](auto& c) {
         objects.at(c.template Arg<int>(0)).heading = c.template Arg<float>(1);
     };
-    ScriptEngine::handlers[SET_ENTITY_AS_MISSION_ENTITY] = [](auto&) {};
+    ScriptEngine::handlers[SET_ENTITY_AS_MISSION_ENTITY] = [](auto&) {
+        if (fail_mission_calls > 0) {
+            --fail_mission_calls;
+            throw std::runtime_error("simulated GTA mission ownership failure");
+        }
+    };
     ScriptEngine::handlers[DELETE_ENTITY] = [](auto& c) {
+        if (fail_delete)
+            throw std::runtime_error("simulated GTA entity deletion failure");
         auto* p = c.template Arg<int*>(0);
         deleted += int(objects.erase(*p));
         *p = 0;
@@ -281,6 +291,42 @@ int main() {
     assert(OpenVGameAuthorityDespawn(nullptr, handle, &p) == 1);
     assert(OpenVGameAuthorityDeactivate(&session) == 1);
     assert(OpenVGameAuthorityUnbind(&session) == 1);
+    // A new session must independently authorize its resource model policy.
+    assert(OpenVGameAuthorityBind(&session, tick, authorized, nullptr) == 1);
+    assert(OpenVGameAuthorityAllowModel(OPENV_AUTHORITY_VEHICLE, 0x12345678u) == 1);
+    assert(OpenVGameAuthorityActivate(&session) == 1);
+
+    // A GTA CREATE_* can succeed even when mission ownership or rollback
+    // fails. Retain that unacknowledged handle instead of leaking it or
+    // creating a second proxy on a server retry.
+    const int before_created = created;
+    const int before_deleted = deleted;
+    auto pending = vehicle(999);
+    fail_mission_calls = 1;
+    fail_delete = true;
+    uint64_t orphan_handle = 0;
+    assert(OpenVGameAuthoritySpawn(nullptr, &pending, &orphan_handle) == 0);
+    assert(orphan_handle == 0 && created == before_created + 1);
+    assert(OpenVGameAuthoritySpawn(nullptr, &pending, &orphan_handle) == 0);
+    assert(created == before_created + 1 && deleted == before_deleted);
+    fail_delete = false;
+    assert(OpenVGameAuthoritySpawn(nullptr, &pending, &orphan_handle) == 1);
+    assert(orphan_handle != 0 && created == before_created + 2);
+    assert(deleted == before_deleted + 1);
+    assert(OpenVGameAuthorityDespawn(nullptr, orphan_handle, &pending) == 1);
+    assert(deleted == before_deleted + 2);
+
+    // Unbind must also drain an unacknowledged handle, even if the server
+    // never issued a despawn for the failed spawn.
+    fail_mission_calls = 1;
+    fail_delete = true;
+    orphan_handle = 0;
+    assert(OpenVGameAuthoritySpawn(nullptr, &pending, &orphan_handle) == 0);
+    assert(OpenVGameAuthorityDeactivate(&session) == 1);
+    assert(OpenVGameAuthorityUnbind(&session) == 0);
+    fail_delete = false;
+    assert(OpenVGameAuthorityUnbind(&session) == 1);
+    assert(objects.size() == 1);
 
     // Full native C ABI lifecycle: game ped -> authenticated bridge join ->
     // nonblocking GTA frame replication -> teardown after entitlement loss.
