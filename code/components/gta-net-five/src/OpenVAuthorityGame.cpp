@@ -30,6 +30,7 @@
 
 namespace {
 constexpr uint64_t PLAYER_PED_ID = 0xD80958FC74E988A6ULL;
+constexpr uint64_t GET_VEHICLE_PED_IS_IN = 0x9A9112A0FE9A4713ULL;
 constexpr uint64_t GET_ENTITY_COORDS = 0x3FEF770D40960D5AULL;
 constexpr uint64_t GET_ENTITY_HEADING = 0xE83D4F9BA2A38914ULL;
 constexpr uint64_t DOES_ENTITY_EXIST = 0x7239B21A38F536BAULL;
@@ -394,6 +395,23 @@ extern "C" int OpenVGameAuthorityReadLocal(
     int ped = 0;
     if (!native_result(PLAYER_PED_ID, ped) || !exists(ped))
         return 0;
+    // When seated, the vehicle's transform is the authoritative movement
+    // origin. Ped heading can remain fixed relative to the seat while the
+    // vehicle rotates; reporting it makes remote motion and proximity drift.
+    // false explicitly excludes the last vehicle after the ped exits.
+    int current_vehicle = 0;
+    if (native_result(GET_VEHICLE_PED_IS_IN, current_vehicle, ped, false) &&
+        current_vehicle > 0 && exists(current_vehicle)) {
+        openv_authority_position vehicle_sample{};
+        if (read_position(current_vehicle, vehicle_sample)) {
+            *position = vehicle_sample;
+            return 1;
+        }
+        // A live vehicle with an unreadable transform is not a valid
+        // position sample; never substitute the occupant's potentially
+        // inconsistent seat transform in the middle of vehicle movement.
+        return 0;
+    }
     openv_authority_position sample{};
     if (!read_position(ped, sample)) return 0;
     *position = sample;
