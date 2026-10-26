@@ -1,0 +1,53 @@
+name: OpenV GTA native adapter tests
+on:
+  pull_request:
+    paths:
+      - 'code/components/gta-net-five/include/OpenVAuthorityGame.h'
+      - 'code/components/gta-net-five/src/OpenVAuthorityGame.cpp'
+      - 'tests/openv_gta_native_adapter.cpp'
+      - 'tests/native-gta-adapter-stubs/**'
+      - '.github/workflows/openv-gta-native-adapter.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'code/components/gta-net-five/include/OpenVAuthorityGame.h'
+      - 'code/components/gta-net-five/src/OpenVAuthorityGame.cpp'
+      - 'tests/openv_gta_native_adapter.cpp'
+      - 'tests/native-gta-adapter-stubs/**'
+      - '.github/workflows/openv-gta-native-adapter.yml'
+permissions:
+  contents: read
+jobs:
+  native-adapter:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and execute native game adapter regression (GCC)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
+            -Itests/native-gta-adapter-stubs \
+            -Icode/components/gta-net-five/include \
+            code/components/gta-net-five/src/OpenVAuthorityGame.cpp \
+            tests/openv_gta_native_adapter.cpp -o /tmp/openv-gta-native-adapter
+          /tmp/openv-gta-native-adapter
+      - name: Compile and execute native game adapter regression (MSVC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
+          if (-not $vs) { throw 'Visual Studio installation not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { throw 'vcvars64.bat missing' }
+          $command = 'call "' + $vcvars + '" && cl /nologo /std:c++17 /EHsc /W4 /WX /Itests\native-gta-adapter-stubs /Icode\components\gta-net-five\include code\components\gta-net-five\src\OpenVAuthorityGame.cpp tests\openv_gta_native_adapter.cpp /Fe:openv-gta-native-adapter.exe && openv-gta-native-adapter.exe'
+          cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw "MSVC native game adapter test failed: $LASTEXITCODE" }
