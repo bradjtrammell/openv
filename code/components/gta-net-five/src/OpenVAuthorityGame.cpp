@@ -44,6 +44,8 @@ constexpr uint64_t CREATE_VEHICLE = 0xAF35D0D2583051B0ULL;
 constexpr uint64_t SET_ENTITY_COORDS_NO_OFFSET = 0x239A3351AC1DA385ULL;
 constexpr uint64_t SET_ENTITY_HEADING = 0x8E2530AA8ADA980EULL;
 constexpr uint64_t SET_ENTITY_AS_MISSION_ENTITY = 0xAD738C3085FE7E11ULL;
+constexpr uint64_t FREEZE_ENTITY_POSITION = 0x428CA6DBD1094446ULL;
+constexpr uint64_t SET_BLOCKING_OF_NON_TEMPORARY_EVENTS = 0x9F8AA94D6D97DBF4ULL;
 constexpr uint64_t DELETE_ENTITY = 0xAE3CBE5BF394C9C9ULL;
 constexpr uint64_t SET_MODEL_AS_NO_LONGER_NEEDED = 0xE532F5D78798DAABULL;
 constexpr uint32_t FREEMODE_MALE = 0x705E61F2u;
@@ -205,6 +207,17 @@ void release_model(uint32_t model) {
     (void)native_void(SET_MODEL_AS_NO_LONGER_NEEDED, model);
 }
 
+// GTA's AI and physics must not move local-only remote replicas between
+// authenticated snapshots. A failure is an unacknowledged spawn, not a live
+// authority handle. The actual OneSync network-entity path remains separate.
+bool configure_remote_replica(int handle, uint32_t kind) {
+    if (!native_void(FREEZE_ENTITY_POSITION, handle, true)) return false;
+    if (kind != OPENV_AUTHORITY_VEHICLE &&
+        !native_void(SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, handle, true))
+        return false;
+    return true;
+}
+
 bool remove_entity(int handle) {
     if (!exists(handle)) return true;
     if (!native_void(SET_ENTITY_AS_MISSION_ENTITY, handle, true, true))
@@ -351,7 +364,11 @@ extern "C" int OpenVGameAuthoritySpawn(
     // A mission-ownership failure is a failed spawn, never a successful ACK.
     const bool mission_owned = called && created_live &&
         native_void(SET_ENTITY_AS_MISSION_ENTITY, created, true, true);
-    if (!mission_owned) {
+    // A proxy must be under engine ownership AND inert to local AI/physics
+    // before its handle is exposed to the authoritative replication pump.
+    const bool replica_ready = mission_owned &&
+        configure_remote_replica(created, e->kind);
+    if (!replica_ready) {
         if (created_live) {
             entry->second.handle = created;
             entry->second.pending_cleanup = true;

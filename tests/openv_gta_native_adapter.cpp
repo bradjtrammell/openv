@@ -29,6 +29,8 @@ constexpr uint64_t CREATE_VEHICLE = 0xAF35D0D2583051B0ULL;
 constexpr uint64_t SET_ENTITY_COORDS_NO_OFFSET = 0x239A3351AC1DA385ULL;
 constexpr uint64_t SET_ENTITY_HEADING = 0x8E2530AA8ADA980EULL;
 constexpr uint64_t SET_ENTITY_AS_MISSION_ENTITY = 0xAD738C3085FE7E11ULL;
+constexpr uint64_t FREEZE_ENTITY_POSITION = 0x428CA6DBD1094446ULL;
+constexpr uint64_t SET_BLOCKING_OF_NON_TEMPORARY_EVENTS = 0x9F8AA94D6D97DBF4ULL;
 constexpr uint64_t DELETE_ENTITY = 0xAE3CBE5BF394C9C9ULL;
 constexpr uint64_t SET_MODEL_AS_NO_LONGER_NEEDED = 0xE532F5D78798DAABULL;
 
@@ -36,6 +38,8 @@ struct Object {
     float x, y, z, heading;
     uint32_t model;
     bool vehicle;
+    bool frozen = false;
+    bool ai_blocked = false;
 };
 std::unordered_map<int, Object> objects{{10, {1, 2, 3, 45, 0, false}}};
 int next_handle = 10;
@@ -49,6 +53,8 @@ bool allowed = true;
 int current_vehicle = 0;
 bool vehicle_lookup_available = true;
 int fail_mission_calls = 0;
+int fail_freeze_calls = 0;
+int fail_ai_block_calls = 0;
 bool fail_delete = false;
 int session = 7;
 
@@ -124,6 +130,20 @@ void register_natives() {
             --fail_mission_calls;
             throw std::runtime_error("simulated GTA mission ownership failure");
         }
+    };
+    ScriptEngine::handlers[FREEZE_ENTITY_POSITION] = [](auto& c) {
+        if (fail_freeze_calls > 0) {
+            --fail_freeze_calls;
+            throw std::runtime_error("simulated GTA freeze failure");
+        }
+        objects.at(c.template Arg<int>(0)).frozen = c.template Arg<bool>(1);
+    };
+    ScriptEngine::handlers[SET_BLOCKING_OF_NON_TEMPORARY_EVENTS] = [](auto& c) {
+        if (fail_ai_block_calls > 0) {
+            --fail_ai_block_calls;
+            throw std::runtime_error("simulated GTA AI suppression failure");
+        }
+        objects.at(c.template Arg<int>(0)).ai_blocked = c.template Arg<bool>(1);
     };
     ScriptEngine::handlers[DELETE_ENTITY] = [](auto& c) {
         if (fail_delete)
@@ -297,6 +317,7 @@ int main() {
     loaded = true;
     assert(OpenVGameAuthoritySpawn(nullptr, &p, &handle) == 1);
     assert(handle == 11 && created == 1);
+    assert(objects.at(11).frozen && objects.at(11).ai_blocked);
     uint64_t duplicate = 0;
     assert(OpenVGameAuthoritySpawn(nullptr, &p, &duplicate) == 0);
     assert(created == 1 && duplicate == 0);
@@ -311,6 +332,8 @@ int main() {
     uint64_t vehicle_handle = 0;
     assert(OpenVGameAuthoritySpawn(nullptr, &v, &vehicle_handle) == 1);
     assert(objects.at(int(vehicle_handle)).vehicle);
+    assert(objects.at(int(vehicle_handle)).frozen);
+    assert(!objects.at(int(vehicle_handle)).ai_blocked);
     v.sequence = 2;
     v.heading = 120;
     assert(OpenVGameAuthorityMove(nullptr, vehicle_handle, &v) == 1);
@@ -366,6 +389,31 @@ int main() {
     assert(deleted == before_deleted + 1);
     assert(OpenVGameAuthorityDespawn(nullptr, orphan_handle, &pending) == 1);
     assert(deleted == before_deleted + 2);
+
+    // GTA physics or ped AI configuration failures must not ACK a live
+    // replica. Failed rollback retains the handle and blocks duplicates.
+    auto unstable = player(998);
+    fail_freeze_calls = 1;
+    fail_delete = true;
+    const int freeze_created = created;
+    assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 0);
+    assert(orphan_handle == 0 && created == freeze_created + 1);
+    assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 0);
+    assert(created == freeze_created + 1);
+    fail_delete = false;
+    assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 1);
+    assert(objects.at(int(orphan_handle)).frozen);
+    assert(objects.at(int(orphan_handle)).ai_blocked);
+    assert(OpenVGameAuthorityDespawn(nullptr, orphan_handle, &unstable) == 1);
+
+    fail_ai_block_calls = 1;
+    const int ai_created = created;
+    assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 0);
+    assert(orphan_handle == 0 && created == ai_created + 1);
+    assert(OpenVGameAuthoritySpawn(nullptr, &unstable, &orphan_handle) == 1);
+    assert(objects.at(int(orphan_handle)).frozen);
+    assert(objects.at(int(orphan_handle)).ai_blocked);
+    assert(OpenVGameAuthorityDespawn(nullptr, orphan_handle, &unstable) == 1);
 
     // Unbind must also drain an unacknowledged handle, even if the server
     // never issued a despawn for the failed spawn.
