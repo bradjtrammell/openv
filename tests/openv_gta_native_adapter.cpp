@@ -223,6 +223,7 @@ struct FakeAuthority {
     int destroys = 0;
     bool fail_join = false;
     bool fail_async_poll = false;
+    bool unexpected_async_poll = false;
     int async_polls = 0;
     bool fail_stop_once = false;
     bool fail_destroy_once = false;
@@ -276,6 +277,7 @@ int fake_poll_start(void* authority_session, char* error, size_t capacity) {
     assert(OpenVGameAuthorityMainThreadReady() == 1);
     ++fake.async_polls;
     if (fake.async_polls == 1) return 0;
+    if (fake.unexpected_async_poll) return 2;
     return fake.fail_async_poll ? -1 : 1;
 }
 int fake_tick(void* authority_session, openv_authority_frame* frame) {
@@ -785,6 +787,18 @@ int main() {
     assert(fake.async_polls == 2); // rejected joins never poll again
     assert(OpenVGameAuthorityStopNative() == 1);
     fake.fail_async_poll = false;
+
+    // Unknown bridge status codes must fail closed rather than remaining
+    // indefinitely pending or accidentally activating replication.
+    fake.unexpected_async_poll = true;
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 1);
+    OnMainGameFrame.Fire();
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    fake.unexpected_async_poll = false;
 
     // Revocation while admission is pending never activates a late join.
     assert(OpenVGameAuthorityStartNativeAsync(
