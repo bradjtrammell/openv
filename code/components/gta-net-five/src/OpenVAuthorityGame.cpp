@@ -12,6 +12,7 @@
 #include <ScriptEngine.h>
 #include <OpenVAuthorityGame.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -57,6 +58,9 @@ openv_game_authority_tick tick_callback = nullptr;
 openv_game_authority_check authorization_callback = nullptr;
 void* authorization_context = nullptr;
 bool activated = false;
+bool inside_game_frame = false;
+openv_game_native_api native_owner_api{};
+void* native_owner_session = nullptr;
 
 bool on_game_thread() {
     return game_thread != std::thread::id{} &&
@@ -331,13 +335,151 @@ extern "C" int OpenVGameAuthorityDespawn(
 
 extern "C" int OpenVGameAuthorityReadLocal(
     void*, openv_authority_position* position) {
-    if (!authorized() || !activated || !position) return 0;
+    if (!authorized() || !position) return 0;
     int ped = 0;
     if (!native_result(PLAYER_PED_ID, ped) || !exists(ped))
         return 0;
     openv_authority_position sample{};
     if (!read_position(ped, sample)) return 0;
     *position = sample;
+    return 1;
+}
+
+
+namespace {
+void native_error(char* output, size_t capacity, const char* message) {
+    if (!output || !capacity) return;
+    const size_t n = std::min(capacity - 1, std::strlen(message));
+    std::memcpy(output, message, n);
+    output[n] = '\0';
+}
+
+bool valid_private_capability(const char* token) {
+    if (!token) return false;
+    for (size_t i = 0; i < 43; ++i) {
+        const unsigned char c = static_cast<unsigned char>(token[i]);
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_'))
+            return false;
+    }
+    return token[43] == '\0';
+}
+
+bool complete_native_api(const openv_game_native_api* api) {
+    if (!api || api->struct_size != sizeof(*api) ||
+        !api->abi_version || !api->create || !api->configure_position_source ||
+        !api->start || !api->tick || !api->stop || !api->destroy)
+        return false;
+    try { return api->abi_version() == OPENV_AUTHORITY_ABI_VERSION; }
+    catch (...) { return false; }
+}
+} // namespace
+
+extern "C" int OpenVGameAuthorityNativeActive(void) {
+    return native_owner_session && activated && authorized() ? 1 : 0;
+}
+
+extern "C" int OpenVGameAuthorityStopNative(void) {
+    if (inside_game_frame || !native_owner_session || !on_game_thread())
+        return 0;
+    // Deactivation stops new game callbacks but never blocks cleanup:
+    // native stop invokes despawn even after admission is withdrawn.
+    if (activated && !OpenVGameAuthorityDeactivate(native_owner_session))
+        return 0;
+    try {
+        if (native_owner_api.stop(native_owner_session) != 1)
+            return 0; // retain live callbacks and session for retry
+    } catch (...) { return 0; }
+    if (bound_session == native_owner_session &&
+        !OpenVGameAuthorityUnbind(native_owner_session))
+        return 0; // pending engine handles must remain tracked
+    try {
+        if (native_owner_api.destroy(native_owner_session) != 1)
+            return 0;
+    } catch (...) { return 0; }
+    native_owner_session = nullptr;
+    native_owner_api = {};
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityStartNative(
+    const openv_game_native_api* api, const openv_game_native_launch* launch,
+    char* error, size_t error_capacity) {
+    native_error(error, error_capacity, "");
+    if (inside_game_frame || native_owner_session || bound_session ||
+        !entities.empty() || !complete_native_api(api) || !launch ||
+        launch->struct_size != sizeof(*launch) || !launch->bridge_port ||
+        !valid_private_capability(launch->bridge_capability) ||
+        !launch->entitlement || launch->model_count > 256 ||
+        (launch->model_count && !launch->models)) {
+        native_error(error, error_capacity, "invalid native authority launch contract");
+        return 0;
+    }
+    try {
+        if (launch->entitlement(launch->entitlement_context) != 1) {
+            native_error(error, error_capacity, "game entitlement or session not authorized");
+            return 0;
+        }
+    } catch (...) {
+        native_error(error, error_capacity, "game authorization callback failed");
+        return 0;
+    }
+
+    const openv_game_native_config config{
+        sizeof(openv_game_native_config), OPENV_AUTHORITY_ABI_VERSION,
+        launch->bridge_port, launch->bridge_capability, 250, 10000
+    };
+    const openv_game_native_callbacks callbacks{
+        sizeof(openv_game_native_callbacks),
+        OpenVGameAuthorityAuthorized, OpenVGameAuthoritySpawn,
+        OpenVGameAuthorityMove, OpenVGameAuthorityDespawn
+    };
+    native_owner_api = *api;
+    try {
+        native_owner_session = api->create(&config, &callbacks, nullptr);
+    } catch (...) { native_owner_session = nullptr; }
+    if (!native_owner_session) {
+        native_owner_api = {};
+        native_error(error, error_capacity, "native authority session creation failed");
+        return 0;
+    }
+    auto fail = [&](const char* message) {
+        // A failed authenticated join is single-use. Attempt orderly cleanup,
+        // but retain the native session if stop cannot yet remove its handles.
+        (void)OpenVGameAuthorityStopNative();
+        native_error(error, error_capacity, message);
+        return 0;
+    };
+    if (!OpenVGameAuthorityBind(native_owner_session, api->tick,
+                                launch->entitlement, launch->entitlement_context))
+        return fail("native authority game-thread bind failed");
+    try {
+        if (api->configure_position_source(native_owner_session,
+                OpenVGameAuthorityReadLocal, nullptr, 50, 1000, 0.05, 1.0) != 1)
+            return fail("native local avatar sampler configuration failed");
+    } catch (...) {
+        return fail("native local avatar sampler configuration failed");
+    }
+    for (size_t i = 0; i < launch->model_count; ++i) {
+        const auto& model = launch->models[i];
+        if (!OpenVGameAuthorityAllowModel(model.kind, model.model))
+            return fail("native resource model policy rejected");
+    }
+    openv_authority_position initial{};
+    if (!OpenVGameAuthorityReadLocal(nullptr, &initial))
+        return fail("local GTA V player ped not ready");
+    char bridge_error[257]{}; // Never expose private bridge response to UI.
+    int joined = 0;
+    try {
+        joined = api->start(native_owner_session, initial.x, initial.y,
+                            initial.z, initial.heading,
+                            bridge_error, sizeof(bridge_error));
+    } catch (...) { joined = 0; }
+    std::memset(bridge_error, 0, sizeof(bridge_error));
+    if (joined != 1)
+        return fail("authenticated numeric multiplayer join failed");
+    if (!OpenVGameAuthorityActivate(native_owner_session))
+        return fail("native authority game activation failed");
     return 1;
 }
 
@@ -350,9 +492,11 @@ static InitFunction openvNativeGameFrame([] {
         // The native authority tick only drains an authenticated worker
         // mailbox and dispatches engine callbacks; it performs no network I/O.
         // Keep ticking after revocation so remote handles can be withdrawn.
+        inside_game_frame = true;
         try { (void)tick_callback(bound_session, &frame); }
         catch (...) {
             // Never allow a C++ exception to escape the GTA game loop.
         }
+        inside_game_frame = false;
     });
 });
