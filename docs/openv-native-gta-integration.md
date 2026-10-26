@@ -155,3 +155,34 @@ client needs lawful Mono, FFmpeg and Steamworks dependencies, and the game
 must pass licensed two-PC gameplay and resource execution tests before
 OpenV can be called playable. No proprietary assets or entitlement bypasses
 are included.
+
+
+## Pinned native bridge staging contract (2026-10-26)
+
+The public GTA client repository includes
+`tools/stage_openv_native_bridge.py` and ten staging regression tests.
+The tool verifies an actual Windows AMD64 DLL's PE role, exact C ABI exports
+and system-only imports with the first-party server's
+`windows_binary_audit.py`, then stages identical bytes atomically and
+records SHA-256 and exact source commit. It refuses mismatched existing DLLs,
+unexpected imports/exports, reparse points, symlinks and invalid source refs.
+
+**Repository visibility constraint:** `bradjtrammell/openv-server` is private.
+The public `bradjtrammell/openv` GitHub Actions token cannot read it; a
+cross-repository `actions/checkout` attempt failed with GitHub's 404
+`Repository not found`. The public Windows client workflow therefore does
+**not** fetch or bundle the private DLL and must not claim a playable package.
+The native bridge is built and checked alongside the public GTA adapter
+contract in the **private server CI**, which can read the public repository.
+An explicitly authorized private-to-public artifact handoff or permitted
+credential will be needed before the public client runtime can include it.
+Do not copy private server source or binaries into this public repository.
+
+The trusted, lawfully entitled launcher still must supply a private bridge
+capability and live entitlement callback to
+`OpenVGameAuthorityStartNativeFromDll` on the real GTA game thread.
+The adapter currently creates local-only ped/vehicle proxies rather than
+interoperable OneSync network objects. Mono, FFmpeg and Steamworks
+dependencies, genuine GTA V launch, in-game resource execution and licensed
+two-PC gameplay remain separate acceptance gates. No proprietary assets,
+ownership bypasses, public releases or production deployments are included.

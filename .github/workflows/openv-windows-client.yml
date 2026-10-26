@@ -16,6 +16,8 @@ on:
       - 'tests/test_stage_open_runtime.py'
       - 'tests/test_stage_msvc_runtime.py'
       - 'tests/test_stage_cef_runtime.py'
+      - 'tools/stage_openv_native_bridge.py'
+      - 'tests/test_stage_openv_native_bridge.py'
       - 'ext/ui-build/**'
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_runtime_audit.py'
@@ -97,6 +99,10 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_stage_open_runtime.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Mono/FFmpeg staging security tests failed' }
+      - name: Test real native bridge staging safety
+        run: |
+          python -m unittest discover -s tests -p test_stage_openv_native_bridge.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native bridge staging tests failed' }
       - name: Select installed Windows SDK
         shell: pwsh
         run: |
