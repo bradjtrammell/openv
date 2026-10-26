@@ -20,6 +20,8 @@ struct MockSession {
     uint64_t sequence = 1;
     int frames = 0;
     bool started = false;
+    bool joining = false;
+    int admission_polls = 0;
     bool motion_configured = false;
     bool interest_configured = false;
 };
@@ -86,6 +88,26 @@ __declspec(dllexport) int openv_authority_start(
     session->started = true;
     return 1;
 }
+// The same asynchronous entry points as the production private DLL.
+// Deliberately hold one frame to verify no GTA entity is created before ACK.
+__declspec(dllexport) int openv_authority_start_async(
+    void* pointer, double x, double y, double z, double heading,
+    char* error, size_t capacity) {
+    auto* session = static_cast<MockSession*>(pointer);
+    if (!session || session->joining || !openv_authority_start(
+            pointer, x, y, z, heading, error, capacity)) return 0;
+    session->joining = true;
+    session->admission_polls = 0;
+    return 1;
+}
+__declspec(dllexport) int openv_authority_poll_start(
+    void* pointer, char* error, size_t capacity) {
+    auto* session = static_cast<MockSession*>(pointer);
+    if (!session || !session->joining || !error || !capacity) return -1;
+    if (++session->admission_polls == 1) return 0;
+    session->joining = false;
+    return 1;
+}
 __declspec(dllexport) int openv_authority_tick(
     void* pointer, openv_authority_frame* frame) {
     auto* session = static_cast<MockSession*>(pointer);
@@ -123,6 +145,7 @@ __declspec(dllexport) int openv_authority_stop(void* pointer) {
         session->handle = 0;
     }
     session->started = false;
+    session->joining = false;
     return 1;
 }
 __declspec(dllexport) int openv_authority_destroy(void* pointer) {

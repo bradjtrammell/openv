@@ -129,6 +129,18 @@ typedef struct openv_game_native_api {
     int (*destroy)(void*);
 } openv_game_native_api;
 
+/*
+ * Additive ABI v1 async admission contract. No change to the existing
+ * openv_game_native_api layout: both exports come from the same pinned DLL.
+ * start_async queues an authenticated join; poll_start returns 0 pending,
+ * 1 admitted, -1 denied. The native bridge owns its join worker.
+ */
+typedef struct openv_game_native_async_api {
+    uint32_t struct_size;
+    int (*start_async)(void*, double, double, double, double, char*, size_t);
+    int (*poll_start)(void*, char*, size_t);
+} openv_game_native_async_api;
+
 typedef struct openv_game_native_model {
     uint32_t kind;
     uint32_t model;
@@ -160,6 +172,26 @@ OPENV_GAME_API int OpenVGameAuthorityStartNativeFromDll(
     const wchar_t* absolute_library_path,
     const openv_game_native_launch* launch,
     char* error, size_t error_capacity);
+/*
+ * Nonblocking authenticated admission. Call StartNativeAsync or the Windows
+ * DLL variant on the observed main game thread OUTSIDE OnMainGameFrame.
+ * Return 1 means admission QUEUED, never that a session is authenticated.
+ * The game frame automatically polls the private bridge and activates only
+ * after a validated join. No network I/O or blocking join on the frame.
+ * Status: -2 no owned session, -1 rejected/cleanup required, 0 pending,
+ * 1 admitted and active. Status may be queried only on the game thread.
+ * A failed/revoked join must be stopped OUTSIDE the frame before retrying.
+ */
+OPENV_GAME_API int OpenVGameAuthorityStartNativeAsync(
+    const openv_game_native_api* api,
+    const openv_game_native_async_api* async_api,
+    const openv_game_native_launch* launch,
+    char* error, size_t error_capacity);
+OPENV_GAME_API int OpenVGameAuthorityStartNativeAsyncFromDll(
+    const wchar_t* absolute_library_path,
+    const openv_game_native_launch* launch,
+    char* error, size_t error_capacity);
+OPENV_GAME_API int OpenVGameAuthorityNativeAdmissionStatus(void);
 /* Retryable teardown. Retains the session and callbacks on failed cleanup. */
 OPENV_GAME_API int OpenVGameAuthorityStopNative(void);
 OPENV_GAME_API int OpenVGameAuthorityNativeActive(void);

@@ -222,6 +222,9 @@ struct FakeAuthority {
     int stops = 0;
     int destroys = 0;
     bool fail_join = false;
+    bool fail_async_poll = false;
+    bool unexpected_async_poll = false;
+    int async_polls = 0;
     bool fail_stop_once = false;
     bool fail_destroy_once = false;
 } fake;
@@ -260,6 +263,22 @@ int fake_start(void* authority_session, double x, double y, double z, double hea
     assert(error && capacity > 0);
     ++fake.starts;
     return fake.fail_join ? 0 : 1;
+}
+int fake_start_async(void* authority_session, double x, double y, double z,
+                     double heading, char* error, size_t capacity) {
+    if (fake_start(authority_session, x, y, z, heading, error, capacity) != 1)
+        return 0;
+    fake.async_polls = 0;
+    return 1;
+}
+int fake_poll_start(void* authority_session, char* error, size_t capacity) {
+    assert(authority_session == &fake);
+    assert(error && capacity);
+    assert(OpenVGameAuthorityMainThreadReady() == 1);
+    ++fake.async_polls;
+    if (fake.async_polls == 1) return 0;
+    if (fake.unexpected_async_poll) return 2;
+    return fake.fail_async_poll ? -1 : 1;
 }
 int fake_tick(void* authority_session, openv_authority_frame* frame) {
     assert(authority_session == &fake);
@@ -310,6 +329,10 @@ int fake_destroy(void* authority_session) {
 openv_game_native_api fake_api() {
     return {sizeof(openv_game_native_api), fake_abi, fake_create,
             fake_configure, fake_start, fake_tick, fake_stop, fake_destroy};
+}
+openv_game_native_async_api fake_async_api() {
+    return {sizeof(openv_game_native_async_api),
+            fake_start_async, fake_poll_start};
 }
 } // namespace
 
@@ -712,6 +735,88 @@ int main() {
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.stops == 7 && fake.destroys == 7);
 
+    // Async numeric admission must never call blocking join or spawn remote
+    // proxies before the bridge has validated its authenticated ACK. Only
+    // OnMainGameFrame can poll, and a failed poll requires out-of-frame stop.
+    auto async_api = fake_async_api();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    async_api.poll_start = nullptr;
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 0);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    async_api = fake_async_api();
+    const int starts_before_async = fake.starts;
+    int foreign_async_start = -1;
+    std::thread foreign_async([&] {
+        char worker_error[128]{};
+        foreign_async_start = OpenVGameAuthorityStartNativeAsync(
+            &api, &async_api, &launch, worker_error, sizeof(worker_error));
+    });
+    foreign_async.join();
+    assert(foreign_async_start == 0 && fake.starts == starts_before_async);
+    fake.frames = 0;
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 1);
+    assert(fake.starts == starts_before_async + 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    OnGameFrame.Fire();
+    assert(fake.async_polls == 0 && fake.frames == 0);
+    OnMainGameFrame.Fire();
+    assert(fake.async_polls == 1 && fake.frames == 0);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    OnMainGameFrame.Fire();
+    assert(fake.async_polls == 2 && fake.frames == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    assert(fake.handle && objects.count(int(fake.handle)) == 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.handle == 0 && objects.size() == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+
+    fake.frames = 0;
+    fake.fail_async_poll = true;
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+    assert(OpenVGameAuthorityNativeActive() == 0 && fake.frames == 0);
+    OnMainGameFrame.Fire();
+    assert(fake.async_polls == 2); // rejected joins never poll again
+    assert(OpenVGameAuthorityStopNative() == 1);
+    fake.fail_async_poll = false;
+
+    // Unknown bridge status codes must fail closed rather than remaining
+    // indefinitely pending or accidentally activating replication.
+    fake.unexpected_async_poll = true;
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 1);
+    OnMainGameFrame.Fire();
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    fake.unexpected_async_poll = false;
+
+    // Revocation while admission is pending never activates a late join.
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 1);
+    allowed = false;
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+    assert(fake.async_polls == 0 && fake.frames == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    allowed = true;
+
+    // A queued join can also be cancelled before the next main frame.
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+
     // A real Windows DLL must be loadable by absolute path, its ABI exports
     // must be resolved, and the same GTA game-thread callbacks must work.
 #ifdef _WIN32
@@ -740,8 +845,26 @@ int main() {
     assert(OpenVGameAuthorityStartNativeFromDll(
         dll_path, &launch, error, sizeof(error)) == 1);
     assert(OpenVGameAuthorityStopNative() == 1);
+    // Resolve the NEW real DLL async exports. A queued join must not claim
+    // admission or create a GTA proxy until the bridge poll returns ready.
+    const int async_created = created;
+    assert(OpenVGameAuthorityStartNativeAsyncFromDll(
+        dll_path, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    assert(created == async_created);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    assert(created == async_created + 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
 #else
     assert(OpenVGameAuthorityStartNativeFromDll(
+        L"/tmp/openv_world_bridge.so", &launch, error, sizeof(error)) == 0);
+    assert(OpenVGameAuthorityStartNativeAsyncFromDll(
         L"/tmp/openv_world_bridge.so", &launch, error, sizeof(error)) == 0);
 #endif
     std::cout << "OpenV GTA engine native adapter: PASS\\n";

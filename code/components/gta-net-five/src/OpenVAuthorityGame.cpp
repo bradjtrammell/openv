@@ -98,6 +98,10 @@ bool inside_game_frame = false;
 constexpr uint32_t MAX_SPAWNS_PER_GAME_FRAME = 8;
 uint32_t spawns_this_frame = 0;
 openv_game_native_api native_owner_api{};
+openv_game_native_async_api native_owner_async_api{};
+// -2 idle, -1 rejected (owner must stop), 0 joining, 1 admitted.
+// Game-thread-only; no status or secret is shared with a launcher worker.
+int native_admission_state = -2;
 void* native_owner_session = nullptr;
 // The game binding clears game_thread on successful unbind. Preserve the
 // original owner thread until native destroy finishes (which can fail).
@@ -585,16 +589,32 @@ bool complete_native_api(const openv_game_native_api* api) {
     try { return api->abi_version() == OPENV_AUTHORITY_ABI_VERSION; }
     catch (...) { return false; }
 }
+bool complete_async_api(const openv_game_native_async_api* api) {
+    return api && api->struct_size == sizeof(*api) &&
+           api->start_async && api->poll_start;
+}
 } // namespace
 
 extern "C" int OpenVGameAuthorityNativeActive(void) {
-    return native_owner_session && activated && authorized() ? 1 : 0;
+    return native_owner_session && native_admission_state == 1 &&
+           activated && authorized() ? 1 : 0;
+}
+
+extern "C" int OpenVGameAuthorityNativeAdmissionStatus(void) {
+    if (!main_frame_ready_on_caller() || !native_owner_session)
+        return -2;
+    if (native_admission_state == 1 && !authorized())
+        return -1;
+    return native_admission_state;
 }
 
 extern "C" int OpenVGameAuthorityStopNative(void) {
     if (inside_game_frame || !native_owner_session ||
         native_owner_thread != std::this_thread::get_id())
         return 0;
+    // Never poll again after teardown starts, including if stop fails and
+    // the caller must retry. Blocking join cancellation is out-of-frame only.
+    native_admission_state = -1;
     // Deactivation stops new game callbacks but never blocks cleanup:
     // native stop invokes despawn even after admission is withdrawn.
     if (activated && !OpenVGameAuthorityDeactivate(native_owner_session))
@@ -619,6 +639,8 @@ extern "C" int OpenVGameAuthorityStopNative(void) {
     native_owner_session = nullptr;
     native_owner_thread = std::thread::id{};
     native_owner_api = {};
+    native_owner_async_api = {};
+    native_admission_state = -2;
     native_owner_stopped = false;
     native_owner_destroyed = false;
 #ifdef _WIN32
@@ -632,8 +654,10 @@ extern "C" int OpenVGameAuthorityStopNative(void) {
     return 1;
 }
 
-extern "C" int OpenVGameAuthorityStartNative(
-    const openv_game_native_api* api, const openv_game_native_launch* launch,
+static int start_native_impl(
+    const openv_game_native_api* api,
+    const openv_game_native_async_api* async_api,
+    const openv_game_native_launch* launch,
     char* error, size_t error_capacity) {
     native_error(error, error_capacity, "");
 #ifdef _WIN32
@@ -648,7 +672,8 @@ extern "C" int OpenVGameAuthorityStartNative(
         return 0;
     }
     if (inside_game_frame || native_owner_session || bound_session ||
-        !entities.empty() || !complete_native_api(api) || !launch ||
+        !entities.empty() || !complete_native_api(api) ||
+        (async_api && !complete_async_api(async_api)) || !launch ||
         launch->struct_size != sizeof(*launch) || !launch->bridge_port ||
         !valid_private_capability(launch->bridge_capability) ||
         !launch->entitlement || launch->model_count > 256 ||
@@ -676,6 +701,8 @@ extern "C" int OpenVGameAuthorityStartNative(
         OpenVGameAuthorityMove, OpenVGameAuthorityDespawn
     };
     native_owner_api = *api;
+    native_owner_async_api = async_api ? *async_api : openv_game_native_async_api{};
+    native_admission_state = async_api ? 0 : -2;
     native_owner_stopped = false;
     native_owner_destroyed = false;
     try {
@@ -684,6 +711,8 @@ extern "C" int OpenVGameAuthorityStartNative(
     if (!native_owner_session) {
         native_owner_thread = std::thread::id{};
         native_owner_api = {};
+        native_owner_async_api = {};
+        native_admission_state = -2;
         native_error(error, error_capacity, "native authority session creation failed");
         return 0;
     }
@@ -733,19 +762,47 @@ extern "C" int OpenVGameAuthorityStartNative(
     char bridge_error[257]{}; // Never expose private bridge response to UI.
     int joined = 0;
     try {
-        joined = api->start(native_owner_session, initial.x, initial.y,
-                            initial.z, initial.heading,
-                            bridge_error, sizeof(bridge_error));
+        joined = async_api ?
+            async_api->start_async(native_owner_session, initial.x, initial.y,
+                                   initial.z, initial.heading,
+                                   bridge_error, sizeof(bridge_error)) :
+            api->start(native_owner_session, initial.x, initial.y,
+                       initial.z, initial.heading,
+                       bridge_error, sizeof(bridge_error));
     } catch (...) { joined = 0; }
     std::memset(bridge_error, 0, sizeof(bridge_error));
     if (joined != 1)
-        return fail("authenticated numeric multiplayer join failed");
+        return fail(async_api ? "asynchronous numeric admission could not start" :
+                               "authenticated numeric multiplayer join failed");
+    // A queued async join is NOT an authenticated session. OnMainGameFrame
+    // polls the nonblocking authority API and activates only after exact ACK.
+    if (async_api) return 1;
     if (!OpenVGameAuthorityActivate(native_owner_session))
         return fail("native authority game activation failed");
+    native_admission_state = 1;
     return 1;
 }
 
-extern "C" int OpenVGameAuthorityStartNativeFromDll(
+extern "C" int OpenVGameAuthorityStartNative(
+    const openv_game_native_api* api, const openv_game_native_launch* launch,
+    char* error, size_t error_capacity) {
+    return start_native_impl(api, nullptr, launch, error, error_capacity);
+}
+
+extern "C" int OpenVGameAuthorityStartNativeAsync(
+    const openv_game_native_api* api,
+    const openv_game_native_async_api* async_api,
+    const openv_game_native_launch* launch,
+    char* error, size_t error_capacity) {
+    if (!complete_async_api(async_api)) {
+        native_error(error, error_capacity, "native asynchronous ABI mismatch");
+        return 0;
+    }
+    return start_native_impl(api, async_api, launch, error, error_capacity);
+}
+
+static int start_native_from_dll_impl(
+    bool asynchronous,
     const wchar_t* absolute_library_path,
     const openv_game_native_launch* launch,
     char* error, size_t error_capacity) {
@@ -799,7 +856,16 @@ extern "C" int OpenVGameAuthorityStartNativeFromDll(
         GetProcAddress(module, "openv_authority_configure_motion"));
     const auto interest = reinterpret_cast<configure_native_interest>(
         GetProcAddress(module, "openv_authority_configure_interest"));
-    if (!complete_native_api(&api) || !motion || !interest) {
+    openv_game_native_async_api async_api{};
+    async_api.struct_size = sizeof(async_api);
+    if (asynchronous) {
+        async_api.start_async = reinterpret_cast<decltype(async_api.start_async)>(
+            GetProcAddress(module, "openv_authority_start_async"));
+        async_api.poll_start = reinterpret_cast<decltype(async_api.poll_start)>(
+            GetProcAddress(module, "openv_authority_poll_start"));
+    }
+    if (!complete_native_api(&api) || !motion || !interest ||
+        (asynchronous && !complete_async_api(&async_api))) {
         FreeLibrary(module);
         native_error(error, error_capacity, "native bridge DLL ABI or exports mismatch");
         return 0;
@@ -808,8 +874,10 @@ extern "C" int OpenVGameAuthorityStartNativeFromDll(
     bridge_interest = interest;
     native_bridge_module = module;
     loading_native_bridge = true;
-    const int started = OpenVGameAuthorityStartNative(
-        &api, launch, error, error_capacity);
+    const int started = asynchronous ?
+        OpenVGameAuthorityStartNativeAsync(&api, &async_api, launch,
+                                            error, error_capacity) :
+        OpenVGameAuthorityStartNative(&api, launch, error, error_capacity);
     loading_native_bridge = false;
     // Startup configuration is complete; no later frame may dereference
     // optional exports. The DLL itself remains owned until StopNative.
@@ -827,11 +895,28 @@ extern "C" int OpenVGameAuthorityStartNativeFromDll(
     // module. The entitled launcher must retry StopNative on the game thread.
     return started;
 #else
+    (void)asynchronous;
     (void)absolute_library_path;
     (void)launch;
     native_error(error, error_capacity, "native bridge DLL loading requires Windows");
     return 0;
 #endif
+}
+
+extern "C" int OpenVGameAuthorityStartNativeFromDll(
+    const wchar_t* absolute_library_path,
+    const openv_game_native_launch* launch,
+    char* error, size_t error_capacity) {
+    return start_native_from_dll_impl(false, absolute_library_path, launch,
+                                      error, error_capacity);
+}
+
+extern "C" int OpenVGameAuthorityStartNativeAsyncFromDll(
+    const wchar_t* absolute_library_path,
+    const openv_game_native_launch* launch,
+    char* error, size_t error_capacity) {
+    return start_native_from_dll_impl(true, absolute_library_path, launch,
+                                      error, error_capacity);
 }
 
 static InitFunction openvNativeGameFrame([] {
@@ -840,8 +925,35 @@ static InitFunction openvNativeGameFrame([] {
     OnMainGameFrame.Connect([] {
         observe_main_frame();
         if (!main_frame_ready_on_caller() ||
-            !bound_session || !activated || !on_game_thread() || !tick_callback)
-            return;
+            !bound_session || !on_game_thread()) return;
+        if (native_owner_session && native_admission_state == 0 &&
+            !activated) {
+            // poll_start only reads a completed join worker; no network I/O
+            // or blocking admission on the GTA frame. Never expose errors.
+            if (!authorized()) {
+                native_admission_state = -1;
+                return;
+            }
+            char join_error[257]{};
+            int result = -1;
+            try {
+                result = native_owner_async_api.poll_start(
+                    native_owner_session, join_error, sizeof(join_error));
+            } catch (...) { result = -1; }
+            std::memset(join_error, 0, sizeof(join_error));
+            if (result == 1) {
+                if (OpenVGameAuthorityActivate(native_owner_session))
+                    native_admission_state = 1;
+                else
+                    native_admission_state = -1;
+            } else if (result != 0) {
+                // Any unrecognized bridge return is denial, never a pending
+                // join that could silently spin forever.
+                native_admission_state = -1;
+            }
+        }
+        if (!activated || !tick_callback ||
+            (native_owner_session && native_admission_state != 1)) return;
         openv_authority_frame frame{};
         frame.struct_size = sizeof(frame);
         // The native authority tick only drains an authenticated worker
