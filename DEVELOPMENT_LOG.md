@@ -366,3 +366,11 @@ Replaced the insecure UI prebuilt download with a source-only Windows build: loc
 - Added GTA game-thread per-model streaming request coalescing, independent model queues and deterministic production-adapter regression tests. Changed `code/components/gta-net-five/src/OpenVAuthorityGame.cpp`, `tests/openv_gta_native_adapter.cpp`, `docs/openv-native-gta-integration.md`, `DEVELOPMENT_LOG.md`.
 - Native GTA adapter CI for new branch: **PENDING** at source commit. Actual GTA launch, lawful two-PC play, OneSync wire entities and in-game resource execution **NOT_RUN**. Windows client runtime dependency gate remains incomplete.
 - Next: obtain targeted Windows/Linux native adapter CI for this branch, fix failures, merge only on passing native checks; then prioritize entitled client/bridge startup in real game lifecycle and actual gameplay tests. No proprietary assets, entitlement bypass, release, deployment or spending.
+
+
+### Verification completion — 2026-10-26
+
+- PR #22 `https://github.com/bradjtrammell/openv/pull/22` **MERGED** `aeada6ec00bc7a1d6f63dc1784a7940439353bdc`; Linux and Windows native adapter CI `40346223072` **PASS**. Broader PR Linux server build **FAIL** due to missing GHCR builder image; unrelated to GTA adapter compilation.
+- PR #23 `https://github.com/bradjtrammell/openv/pull/23` implementation commit `70d6e4228bb6509a3f77a6e4f3b9b318faf096cb` **MERGED** as `4abcbad8151cc617ba7ac340ba41125454930f4e`. Linux GCC and Windows MSVC production-source native adapter CI `40355756559` **PASS** on both jobs.
+- Full PR validation workflow `40355757381` **IN_PROGRESS** at this record; do not claim full client build success. GTA V game launch, authorized two-PC multiplayer, actual OneSync wire replication and resource execution **NOT_RUN**.
+- Next: connect lawful signed-session native bridge activation to actual client launcher/game lifecycle, resolve missing Windows runtime dependencies and test two entitled GTA V PCs. Do not equate local-only GTA proxies with OneSync network entities.
