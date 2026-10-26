@@ -19,6 +19,7 @@ constexpr uint64_t GET_VEHICLE_PED_IS_IN = 0x9A9112A0FE9A4713ULL;
 constexpr uint64_t GET_ENTITY_COORDS = 0x3FEF770D40960D5AULL;
 constexpr uint64_t GET_ENTITY_HEADING = 0xE83D4F9BA2A38914ULL;
 constexpr uint64_t DOES_ENTITY_EXIST = 0x7239B21A38F536BAULL;
+constexpr uint64_t GET_ENTITY_MODEL = 0x9F47B058362C84B5ULL;
 constexpr uint64_t IS_MODEL_IN_CDIMAGE = 0x35B9E0803292B641ULL;
 constexpr uint64_t IS_MODEL_A_PED = 0x75816577FEA6DAD5ULL;
 constexpr uint64_t IS_MODEL_A_VEHICLE = 0x19AAC8F07BFEC53EULL;
@@ -85,6 +86,9 @@ void register_natives() {
     };
     ScriptEngine::handlers[DOES_ENTITY_EXIST] = [](auto& c) {
         result(c, objects.count(c.template Arg<int>(0)) != 0);
+    };
+    ScriptEngine::handlers[GET_ENTITY_MODEL] = [](auto& c) {
+        result(c, objects.at(c.template Arg<int>(0)).model);
     };
     ScriptEngine::handlers[GET_ENTITY_COORDS] = [](auto& c) {
         const auto& o = objects.at(c.template Arg<int>(0));
@@ -263,6 +267,9 @@ int fake_stop(void* authority_session) {
     }
     if (fake.handle) {
         auto p = player(400);
+        // The authority pump withdraws the last rendered sequence, not the
+        // initial spawn sequence, including after interpolation.
+        if (fake.frames >= 2) p.sequence = 2;
         assert(fake.callbacks.despawn(fake.context, fake.handle, &p) == 1);
         fake.handle = 0;
     }
@@ -351,6 +358,18 @@ int main() {
     assert(OpenVGameAuthorityMove(nullptr, handle + 1, &p) == 0);
     assert(OpenVGameAuthorityMove(nullptr, handle, &p) == 1);
     assert(objects.at(11).x == 25 && moved == 1);
+    // The engine must not replay older authenticated transforms, even if
+    // called outside the authority pump. Same-sequence interpolation is legal.
+    auto stale = p;
+    stale.sequence = 1;
+    stale.x = 500;
+    assert(OpenVGameAuthorityMove(nullptr, handle, &stale) == 0);
+    assert(objects.at(11).x == 25 && moved == 1);
+    p.x = 26;
+    assert(OpenVGameAuthorityMove(nullptr, handle, &p) == 1);
+    assert(objects.at(11).x == 26 && moved == 2);
+    assert(OpenVGameAuthorityDespawn(nullptr, handle, &stale) == 0);
+    assert(objects.count(11) == 1);
 
     auto v = vehicle(200);
     uint64_t vehicle_handle = 0;
@@ -461,6 +480,29 @@ int main() {
     assert(objects.at(int(orphan_handle)).frozen);
     assert(objects.at(int(orphan_handle)).ai_blocked);
     assert(OpenVGameAuthorityDespawn(nullptr, orphan_handle, &unstable) == 1);
+
+    // GTA can reclaim a remote handle and reuse the same integer for an
+    // unrelated model. Neither a movement update nor a later despawn may
+    // touch that foreign game entity. Server ID bookkeeping is retired.
+    auto recycled = vehicle(777);
+    uint64_t recycled_handle = 0;
+    assert(OpenVGameAuthoritySpawn(nullptr, &recycled, &recycled_handle) == 1);
+    const int reused = int(recycled_handle);
+    objects.at(reused).model = 0xDEADBEEFu;
+    const int moved_before_reuse = moved;
+    const int deleted_before_reuse = deleted;
+    recycled.sequence = 2;
+    assert(OpenVGameAuthorityMove(nullptr, recycled_handle, &recycled) == 0);
+    assert(moved == moved_before_reuse);
+    assert(OpenVGameAuthorityDespawn(nullptr, recycled_handle, &recycled) == 1);
+    assert(deleted == deleted_before_reuse);
+    assert(objects.at(reused).model == 0xDEADBEEFu);
+    // A fresh server entity may use the old numeric ID without inheriting
+    // the recycled engine handle; the old foreign GTA object stays intact.
+    assert(OpenVGameAuthoritySpawn(nullptr, &recycled, &recycled_handle) == 1);
+    assert(recycled_handle != uint64_t(reused));
+    assert(OpenVGameAuthorityDespawn(nullptr, recycled_handle, &recycled) == 1);
+    objects.erase(reused);
 
     // Unbind must also drain an unacknowledged handle, even if the server
     // never issued a despawn for the failed spawn.

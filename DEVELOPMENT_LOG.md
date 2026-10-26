@@ -1,5 +1,15 @@
 # OpenV development log
 
+## 2026-10-26T14:07:41.826Z — GTA native stale movement and recycled-handle protection (PR #21)
+
+- **Verified starting heads:** OpenV master `21dfe5339929b705a2535c03453aba7ffa51b353`; Server main `c05cf50c32712d99f2c9731b4841861b6559a4ca`; Identity main `687cfcc31ffdb55b5a48dbc31532b1b8c4c9e419`; Admin master `87e3c1a926ffa2c7da2c5f1bf5b9508988a30dc2`; Data master `28b96c69606b337521589d1505da2a4d66b04eea`.
+- **Actual source inspected:** GTA game adapter, header, production native authority pump, deterministic GTA native test, native Windows build workflow, and development log. Prior missing local source archives/commits were not assumed recovered.
+- **Implementation:** Native adapter verifies `GET_ENTITY_MODEL` before remote proxy movement/deletion, refuses stale movement/despawn sequences while preserving equal-sequence interpolation, and retires stale tracked handles without deleting unrelated GTA objects when the engine recycles an integer handle for a different model. Native lookup failure retains cleanup for retry.
+- **Changed files:** `code/components/gta-net-five/src/OpenVAuthorityGame.cpp`, `tests/openv_gta_native_adapter.cpp`, `docs/openv-native-gta-integration.md`, `DEVELOPMENT_LOG.md`.
+- **Implementation commits:** `e88f3104554b19c10d0eda3e14be41cfa27eab90`, `318387ba14d0651417d83a9308789a6257088cd8`, `0d95789fff36b8ed677be54060ec9131a8f74325`, `ac1b26dd132f0fc1228ed362c64187efba90867b`, `0783595651f39cb52c5bb749fae794d4e05810ff`.
+- **Verification:** initial native CI [40336663378](https://github.com/bradjtrammell/openv/actions/runs/40336663378) **FAIL** (GCC adapter test fixture supplied spawn sequence 1 during teardown after move sequence 2); corrected fixture in commit `67d3bb2997974f40d53cb5f119c6ab699f8884e0`. Final exact-source native adapter CI [40336823860](https://github.com/bradjtrammell/openv/actions/runs/40336823860) **PASS** both Ubuntu GCC and Windows MSVC compilation/execution, including 10/10 native staging tests on each platform. Added spawn model verification in commit `2495af77416c312ee0f81555464d33e4de32fedd`. Local full Windows game client **NOT_RUN**; licensed GTA V gameplay, OneSync wire interoperability, resource execution and two-PC game sessions **NOT_RUN**. No public release, deployment, spending or entitlement bypass.
+- **Next priority:** merge after PR validation; then complete authorized launcher/game-thread activation, lawfully staged Windows runtime dependencies, true network entity ownership, and licensed two-PC gameplay.
+
 ## 2026-10-26 — remote GTA visual proxy collision/damage isolation (PR #20)
 
 - **Verified starting GitHub heads:** OpenV master `9ff5f3039aeb9eb2221444c6032a7c3cf0b68433`; Server main `c05cf50c32712d99f2c9731b4841861b6559a4ca`; Identity main `687cfcc31ffdb55b5a48dbc31532b1b8c4c9e419`; Admin master `87e3c1a926ffa2c7da2c5f1bf5b9508988a30dc2`; Data master `28b96c69606b337521589d1505da2a4d66b04eea`.

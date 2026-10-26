@@ -34,6 +34,7 @@ constexpr uint64_t GET_VEHICLE_PED_IS_IN = 0x9A9112A0FE9A4713ULL;
 constexpr uint64_t GET_ENTITY_COORDS = 0x3FEF770D40960D5AULL;
 constexpr uint64_t GET_ENTITY_HEADING = 0xE83D4F9BA2A38914ULL;
 constexpr uint64_t DOES_ENTITY_EXIST = 0x7239B21A38F536BAULL;
+constexpr uint64_t GET_ENTITY_MODEL = 0x9F47B058362C84B5ULL;
 constexpr uint64_t IS_MODEL_IN_CDIMAGE = 0x35B9E0803292B641ULL;
 constexpr uint64_t IS_MODEL_A_PED = 0x75816577FEA6DAD5ULL;
 constexpr uint64_t IS_MODEL_A_VEHICLE = 0x19AAC8F07BFEC53EULL;
@@ -57,6 +58,7 @@ struct Tracked {
     uint32_t model;
     uint32_t bucket;
     int handle;
+    uint64_t sequence;
     // A native spawn failed after allocating a GTA handle. Keep it until
     // deletion succeeds; the authority pump never ACKed this entity.
     bool pending_cleanup;
@@ -227,8 +229,19 @@ bool configure_remote_replica(int handle, uint32_t kind) {
     return true;
 }
 
-bool remove_entity(int handle) {
+bool same_engine_model(int handle, uint32_t expected) {
+    uint32_t current = 0;
+    return native_result(GET_ENTITY_MODEL, current, handle) && current == expected;
+}
+
+// GTA may delete and recycle an engine handle independently of the numeric
+// server entity. Never delete an unrelated replacement entity. If model
+// lookup fails, retain ownership for retry rather than guessing.
+bool remove_entity(int handle, uint32_t model) {
     if (!exists(handle)) return true;
+    uint32_t current = 0;
+    if (!native_result(GET_ENTITY_MODEL, current, handle)) return false;
+    if (current != model) return true; // original GTA entity is already gone
     if (!native_void(SET_ENTITY_AS_MISSION_ENTITY, handle, true, true))
         return false;
     int to_delete = handle;
@@ -240,7 +253,7 @@ bool cleanup_unacknowledged() {
     bool complete = true;
     for (auto it = entities.begin(); it != entities.end();) {
         if (!it->second.pending_cleanup) { ++it; continue; }
-        if (!remove_entity(it->second.handle)) {
+        if (!remove_entity(it->second.handle, it->second.model)) {
             complete = false;
             ++it;
         } else {
@@ -337,7 +350,7 @@ extern "C" int OpenVGameAuthoritySpawn(
     const auto prior = entities.find(e->id);
     if (prior != entities.end()) {
         if (!prior->second.pending_cleanup ||
-            !remove_entity(prior->second.handle)) return 0;
+            !remove_entity(prior->second.handle, prior->second.model)) return 0;
         entities.erase(prior);
     }
     const uint32_t model = e->kind == OPENV_AUTHORITY_PLAYER ?
@@ -353,7 +366,7 @@ extern "C" int OpenVGameAuthoritySpawn(
     std::unordered_map<uint64_t, Tracked>::iterator entry;
     try {
         const auto inserted = entities.emplace(e->id,
-            Tracked{e->kind, model, e->bucket, 0, false});
+            Tracked{e->kind, model, e->bucket, 0, e->sequence, false});
         if (!inserted.second) return 0;
         entry = inserted.first;
     } catch (...) { return 0; }
@@ -376,12 +389,13 @@ extern "C" int OpenVGameAuthoritySpawn(
     // A proxy must be under engine ownership AND inert to local AI/physics
     // before its handle is exposed to the authoritative replication pump.
     const bool replica_ready = mission_owned &&
+        same_engine_model(created, model) &&
         configure_remote_replica(created, e->kind);
     if (!replica_ready) {
         if (created_live) {
             entry->second.handle = created;
             entry->second.pending_cleanup = true;
-            if (remove_entity(created)) entities.erase(entry);
+            if (remove_entity(created, model)) entities.erase(entry);
         } else {
             entities.erase(entry);
         }
@@ -397,9 +411,13 @@ extern "C" int OpenVGameAuthorityMove(
     if (!authorized() || !activated || !e || !transform_valid(*e))
         return 0;
     const auto it = entities.find(e->id);
-    if (it == entities.end() || !matching(it->second, handle, *e))
+    if (it == entities.end() || !matching(it->second, handle, *e) ||
+        e->sequence < it->second.sequence ||
+        !same_engine_model(it->second.handle, it->second.model))
         return 0;
-    return apply_transform(it->second.handle, *e) ? 1 : 0;
+    if (!apply_transform(it->second.handle, *e)) return 0;
+    it->second.sequence = e->sequence;
+    return 1;
 }
 
 extern "C" int OpenVGameAuthorityDespawn(
@@ -409,8 +427,11 @@ extern "C" int OpenVGameAuthorityDespawn(
         return 0;
     const auto it = entities.find(e->id);
     if (it == entities.end()) return 1;
-    if (!matching(it->second, handle, *e)) return 0;
-    if (!remove_entity(it->second.handle)) return 0;
+    // An old despawn must not delete a newer authoritative incarnation.
+    // EngineAuthorityPump supplies the latest rendered sequence on cleanup.
+    if (!matching(it->second, handle, *e) ||
+        e->sequence < it->second.sequence) return 0;
+    if (!remove_entity(it->second.handle, it->second.model)) return 0;
     entities.erase(it);
     return 1;
 }
