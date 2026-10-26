@@ -946,11 +946,14 @@ static InitFunction openvNativeGameFrame([] {
                     native_admission_state = 1;
                 else
                     native_admission_state = -1;
-            } else if (result < 0) {
+            } else if (result != 0) {
+                // Any unrecognized bridge return is denial, never a pending
+                // join that could silently spin forever.
                 native_admission_state = -1;
             }
         }
-        if (!activated || !tick_callback) return;
+        if (!activated || !tick_callback ||
+            (native_owner_session && native_admission_state != 1)) return;
         openv_authority_frame frame{};
         frame.struct_size = sizeof(frame);
         // The native authority tick only drains an authenticated worker
