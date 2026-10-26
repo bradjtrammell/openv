@@ -48,6 +48,7 @@ struct Object {
 };
 std::unordered_map<int, Object> objects{{10, {1, 2, 3, 45, 0, false}}};
 int next_handle = 10;
+int forced_create_handle = 0;
 int requested = 0;
 int created = 0;
 int deleted = 0;
@@ -110,6 +111,10 @@ void register_natives() {
     ScriptEngine::handlers[REQUEST_MODEL] = [](auto&) { ++requested; };
     ScriptEngine::handlers[HAS_MODEL_LOADED] = [](auto& c) { result(c, loaded); };
     ScriptEngine::handlers[CREATE_PED] = [](auto& c) {
+        if (forced_create_handle) {
+            result(c, forced_create_handle);
+            return;
+        }
         const int h = ++next_handle;
         objects[h] = {c.template Arg<float>(2), c.template Arg<float>(3),
             c.template Arg<float>(4), c.template Arg<float>(5),
@@ -118,6 +123,10 @@ void register_natives() {
         result(c, h);
     };
     ScriptEngine::handlers[CREATE_VEHICLE] = [](auto& c) {
+        if (forced_create_handle) {
+            result(c, forced_create_handle);
+            return;
+        }
         const int h = ++next_handle;
         objects[h] = {c.template Arg<float>(1), c.template Arg<float>(2),
             c.template Arg<float>(3), c.template Arg<float>(4),
@@ -352,6 +361,24 @@ int main() {
     uint64_t duplicate = 0;
     assert(OpenVGameAuthoritySpawn(nullptr, &p, &duplicate) == 0);
     assert(created == 1 && duplicate == 0);
+
+    // GTA's CREATE_* must not be allowed to alias an already tracked
+    // remote proxy or the local player's actual ped. Such a native result
+    // is rejected without deleting, freezing or moving either entity.
+    forced_create_handle = int(handle);
+    auto alias_vehicle = vehicle(201);
+    uint64_t alias_handle = 123;
+    const int deleted_before_alias = deleted;
+    assert(OpenVGameAuthoritySpawn(nullptr, &alias_vehicle, &alias_handle) == 0);
+    assert(alias_handle == 0 && deleted == deleted_before_alias);
+    assert(objects.count(int(handle)) == 1);
+    assert(objects.at(int(handle)).model == 0x705E61F2u);
+    forced_create_handle = 10;
+    auto alias_player = player(202);
+    assert(OpenVGameAuthoritySpawn(nullptr, &alias_player, &alias_handle) == 0);
+    assert(alias_handle == 0 && deleted == deleted_before_alias);
+    assert(objects.count(10) == 1);
+    forced_create_handle = 0;
 
     p.sequence = 2;
     p.x = 25;
