@@ -74,6 +74,35 @@ provenance, bitness, ABI version and exported symbols before using them.
 **No arbitrary DLL search, executable injection, entitlement bypass or
 launcher command-line secret transfer is implemented here.**
 
+### Windows DLL binding without a hand-built function table
+
+The game component now also exports
+`OpenVGameAuthorityStartNativeFromDll(absolute_library_path, launch, error, capacity)`.
+This is the concrete Windows bridge-loader path. The trusted launcher supplies
+an **absolute local drive path** to its verified, packaged
+`openv_world_bridge.dll`; relative paths, UNC shares and DLL search-path
+fallbacks are refused. The game component uses `LoadLibraryExW` with
+`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`,
+resolves the seven existing `openv_authority_*` C ABI exports, checks ABI
+version 1, and calls the same authenticated `StartNative` lifecycle.
+The game component retains the module until native stop, engine-handle cleanup,
+callback unbind and destroy have all succeeded. A failed cleanup retains
+the module for retry instead of unloading live callbacks.
+
+This **does not** independently authenticate GTA ownership or acquire
+session tickets. The legitimate launcher must still validate ownership,
+establish the signed-Identity private bridge session, verify the DLL's
+provenance and supply the 43-character capability and live authorization
+callback privately, on the game thread outside `OnGameFrame`. It must call
+`OpenVGameAuthorityStopNative` on logout or entitlement loss.
+The DLL-loading function is not an automatic game-start hook or OneSync
+wire implementation.
+
+Windows CI compiles a separate fixture DLL exporting the exact seven C ABI
+symbols and verifies real DLL loading, GTA mock ped spawning/movement,
+cleanup and reload. Linux builds verify that the Windows-only entry point
+fails closed. Neither test proves GTA V launch or two-player gameplay.
+
 The trusted launcher supplies an `openv_game_native_launch` directly in
 private process memory: a loopback bridge port, exactly 43 canonical
 base64url capability characters, a live nonblocking entitlement/session
