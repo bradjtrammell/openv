@@ -206,3 +206,7 @@ local-only GTA proxy and is **not** a OneSync network entity.
 Deterministic Linux GCC and Windows MSVC adapter tests inject both mission
 ownership and entity deletion failures. These are engine-native mocks, not
 actual GTA V gameplay tests.
+
+## GTA main-thread frame dispatch (2026-10-26)
+
+The native adapter now includes the actual `rage-nutsnbolts-five/include/nutsnbolts.h` event declaration rather than depending on a test-only declaration. It subscribes to `OnMainGameFrame`, **not** `OnGameFrame`: the latter can be fired by the Cfx loading-screen watchdog on a non-main thread. Only the main-thread event may sample GTA ped state, spawn/move/despawn entities, and drain the authenticated native authority mailbox. Deterministic regression tests independently fire both events and require the watchdog event to leave authority state unchanged. This corrects the `C2065: 'OnGameFrame': undeclared identifier` failure observed in the full Windows MSBuild job 40290304089; actual GTA launch remains NOT_RUN.
