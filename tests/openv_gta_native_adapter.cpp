@@ -317,6 +317,25 @@ int main() {
     static_assert(sizeof(openv_authority_entity) == 64, "numeric authority ABI drift");
     assert(OpenVGameAuthorityAbiVersion() == 1);
     register_natives();
+    // A host must not claim a successful native join before the actual GTA
+    // main-frame event identifies its thread. The loading watchdog is not
+    // sufficient, and no GTA entity may be created during this probe.
+    assert(OpenVGameAuthorityMainThreadReady() == 0);
+    assert(OpenVGameAuthorityBind(&session, tick, authorized, nullptr) == 0);
+    OnGameFrame.Fire();
+    assert(OpenVGameAuthorityMainThreadReady() == 0);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityMainThreadReady() == 1);
+    int foreign_ready = -1;
+    int foreign_bind = -1;
+    std::thread foreign_main_frame([&] {
+        OnMainGameFrame.Fire(); // must not steal the established owner thread
+        foreign_ready = OpenVGameAuthorityMainThreadReady();
+        foreign_bind = OpenVGameAuthorityBind(&session, tick, authorized, nullptr);
+    });
+    foreign_main_frame.join();
+    assert(foreign_ready == 0 && foreign_bind == 0);
+    assert(OpenVGameAuthorityMainThreadReady() == 1);
     assert(OpenVGameAuthorityBind(&session, tick, authorized, nullptr) == 1);
     assert(OpenVGameAuthorityBind(&session, tick, authorized, nullptr) == 0);
     assert(OpenVGameAuthorityAuthorized(nullptr) == 1);
@@ -619,6 +638,18 @@ int main() {
     assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
     assert(OpenVGameAuthorityNativeActive() == 0);
     api = fake_api();
+    // A launcher may own credentials on a worker, but it must marshal native
+    // activation to the real game thread. An off-thread call fails BEFORE
+    // constructing the private authority session or attempting network I/O.
+    int foreign_start = -1;
+    std::thread launcher_worker([&] {
+        char worker_error[128]{};
+        foreign_start = OpenVGameAuthorityStartNative(
+            &api, &launch, worker_error, sizeof(worker_error));
+        assert(std::strstr(worker_error, "main game thread") != nullptr);
+    });
+    launcher_worker.join();
+    assert(foreign_start == 0 && fake.starts == 0 && fake.destroys == 0);
     allowed = false;
     assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
     allowed = true;

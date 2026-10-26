@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -76,6 +77,14 @@ uint64_t model_key(uint32_t kind, uint32_t model) {
     return (uint64_t(kind) << 32) | model;
 }
 std::thread::id game_thread;
+// A successful native join is meaningful only on the real GTA main thread.
+// The loading watchdog can emit OnGameFrame from a different thread. Record
+// the first OnMainGameFrame producer before allowing a host to bind or start.
+// Synchronize the identity because a legitimate launcher may probe readiness
+// from a separate host thread before dispatching to the game thread.
+std::mutex main_frame_mutex;
+std::thread::id observed_main_frame_thread;
+bool observed_main_frame = false;
 void* bound_session = nullptr;
 openv_game_authority_tick tick_callback = nullptr;
 openv_game_authority_check authorization_callback = nullptr;
@@ -111,6 +120,22 @@ configure_native_interest bridge_interest = nullptr;
 bool on_game_thread() {
     return game_thread != std::thread::id{} &&
            game_thread == std::this_thread::get_id();
+}
+
+bool main_frame_ready_on_caller() {
+    std::lock_guard<std::mutex> lock(main_frame_mutex);
+    return observed_main_frame &&
+           observed_main_frame_thread == std::this_thread::get_id();
+}
+
+void observe_main_frame() {
+    std::lock_guard<std::mutex> lock(main_frame_mutex);
+    if (!observed_main_frame) {
+        observed_main_frame_thread = std::this_thread::get_id();
+        observed_main_frame = true;
+    }
+    // Never silently rebind the engine thread if a later event fires from a
+    // foreign thread. Only the originally observed thread can own GTA natives.
 }
 
 bool authorized() {
@@ -326,13 +351,18 @@ extern "C" uint32_t OpenVGameAuthorityAbiVersion(void) {
     return OPENV_AUTHORITY_ABI_VERSION;
 }
 
+extern "C" int OpenVGameAuthorityMainThreadReady(void) {
+    return main_frame_ready_on_caller() ? 1 : 0;
+}
+
 extern "C" int OpenVGameAuthorityBind(
     void* session, openv_game_authority_tick tick,
     openv_game_authority_check check, void* context) {
-    if (!session || !tick || !check || bound_session || !entities.empty())
-        return 0;
-    // Bind on the eventual GTA game-frame thread. If the frame thread differs,
-    // the callback refuses to dispatch and the host must unbind safely.
+    if (!main_frame_ready_on_caller() || !session || !tick || !check ||
+        bound_session || !entities.empty()) return 0;
+    // The engine's real main frame has already identified this caller as the
+    // GTA thread. A launcher worker can no longer bind a session that would
+    // appear admitted while silently never receiving game-frame callbacks.
     game_thread = std::this_thread::get_id();
     bound_session = session;
     tick_callback = tick;
@@ -612,6 +642,11 @@ extern "C" int OpenVGameAuthorityStartNative(
         return 0;
     }
 #endif
+    if (!main_frame_ready_on_caller()) {
+        native_error(error, error_capacity,
+            "GTA main game thread not ready; retry after first main frame");
+        return 0;
+    }
     if (inside_game_frame || native_owner_session || bound_session ||
         !entities.empty() || !complete_native_api(api) || !launch ||
         launch->struct_size != sizeof(*launch) || !launch->bridge_port ||
@@ -718,6 +753,11 @@ extern "C" int OpenVGameAuthorityStartNativeFromDll(
 #ifdef _WIN32
     // A trusted launcher supplies the local DLL path. Do not search PATH,
     // current directory, network shares or an environment variable.
+    if (!main_frame_ready_on_caller()) {
+        native_error(error, error_capacity,
+            "GTA main game thread not ready; retry after first main frame");
+        return 0;
+    }
     if (inside_game_frame || native_bridge_module || native_owner_session ||
         bound_session || !entities.empty() || !absolute_library_path ||
         !absolute_library_path[0] || !absolute_library_path[1] ||
@@ -798,7 +838,9 @@ static InitFunction openvNativeGameFrame([] {
     // OnGameFrame may also run from the loading watchdog thread. GTA
     // natives and authority entity handles must only run on the main thread.
     OnMainGameFrame.Connect([] {
-        if (!bound_session || !activated || !on_game_thread() || !tick_callback)
+        observe_main_frame();
+        if (!main_frame_ready_on_caller() ||
+            !bound_session || !activated || !on_game_thread() || !tick_callback)
             return;
         openv_authority_frame frame{};
         frame.struct_size = sizeof(frame);

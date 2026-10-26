@@ -51,13 +51,20 @@ typedef int (*openv_game_authority_check)(void* context);
 typedef int (*openv_game_authority_tick)(void* session, openv_authority_frame* frame);
 
 /*
- * All functions must be invoked on the Cfx GTA V OnGameFrame thread.
+ * All functions must be invoked on the Cfx GTA V OnMainGameFrame thread.
  * Bind before openv_authority_start; activate only after it succeeds.
  * The session and authorization callback must remain alive until unbind.
  * A failed bind never enables entity creation. Unbind does NOT stop a session;
  * the owner must call openv_authority_stop and destroy on its game thread.
  */
 OPENV_GAME_API uint32_t OpenVGameAuthorityAbiVersion(void);
+/*
+ * Returns 1 only on the observed GTA OnMainGameFrame thread after its first
+ * frame. A launcher worker and the loading-screen watchdog return 0.
+ * A trusted launcher must schedule bind/start/stop on that same thread,
+ * outside the render callback. Probe without exposing bridge credentials.
+ */
+OPENV_GAME_API int OpenVGameAuthorityMainThreadReady(void);
 OPENV_GAME_API int OpenVGameAuthorityBind(
     void* session, openv_game_authority_tick tick,
     openv_game_authority_check authorized, void* context);
