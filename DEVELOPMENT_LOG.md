@@ -1,3 +1,9 @@
+## 2026-10-26 — final PR #28 native handoff verification
+
+- Public GTA client PR #28 **MERGED** as `a992ac2b6f9afa33ad67272dc1846aaebc0a3a1c`; squashed implementation source commit `608285ec3e9aa7548ade97c67c67a853ec782a57`. Five changed files: native C ABI header, production GTA adapter, GCC/MSVC native tests, integration documentation, and development log. The previous implementation commits are listed in the detailed entry below.
+- Authoritative production-source GTA native adapter run `40416949938` **PASS** Linux GCC and Windows MSVC. Earlier source-only run `40416820098` **PASS**. PR details validation in `40416947344` **PASS**; full Cfx build matrix remained **IN_PROGRESS / NOT VERIFIED** at merge. Initial PR details run `40416820638` **FAIL** due unscoped commit titles, corrected by squash. Local complete-source build **NOT_RUN** (direct GitHub checkout unavailable).
+- Private server cross-repository integration PR #36 pins the public merge and runs real private DLL compilation, staging, and Windows GTA adapter regressions. Genuine GTA V launch, signed admission in a running game, OneSync-owned entities, resource execution and two-PC licensed gameplay **NOT_RUN**. No public release, deployment, spending, entitlement bypass or hourly scheduling change.
+
 ## 2026-10-26 — owned in-process launcher -> GTA main-frame admission handoff (PR #28)
 
 - **Independently verified starting repository heads:** Client `master` `1c4ef052bd8102bf23afa8e0fbd9327f2b92c4f1`; Server `main` `17808b1e2a27cd499030176a5224550a29c29aa6`; Identity `main` `687cfcc31ffdb55b5a48dbc31532b1b8c4c9e419`; Admin `master` `87e3c1a926ffa2c7da2c5f1bf5b9508988a30dc2`; Data `master` `28b96c69606b337521589d1505da2a4d66b04eea`.
