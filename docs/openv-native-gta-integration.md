@@ -226,3 +226,7 @@ Deterministic GTA adapter tests inject a failed native stop and a failed
 native destroy, assert that the correct stage alone is retried, and verify
 that a fresh session can start after successful cleanup. These tests do not
 exercise an actual GTA V process or prove OneSync interoperability.
+
+## Current occupied vehicle movement sampling (2026-10-26)
+
+The GTA main-thread local-position callback now uses `GET_VEHICLE_PED_IS_IN(ped, false)` to select the **currently occupied** vehicle rather than the last exited vehicle. For a live occupied vehicle it samples the vehicle's actual coordinates and heading, not the ped's seat-relative heading. The numeric server's movement and proximity decisions therefore follow the driven vehicle through turns. An unavailable vehicle lookup or already deleted vehicle falls back to the local ped; a live vehicle with an unreadable transform fails the sample rather than mixing vehicle and ped positions. Deterministic GTA-native adapter tests cover driving, turning, exiting, missing native and despawn. This does not implement remote seating or OneSync entities and is not an actual GTA V gameplay test.
