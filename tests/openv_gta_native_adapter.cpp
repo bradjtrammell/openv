@@ -237,6 +237,7 @@ void* fake_create(const openv_game_native_config* config,
     assert(config->poll_wait_ms == 250);
     assert(config->bridge_io_timeout_ms == 10000);
     assert(std::strlen(config->bridge_capability) == 43);
+    assert(config->bridge_capability[0] == 'A');
     assert(callbacks->struct_size == sizeof(*callbacks));
     fake.callbacks = *callbacks;
     fake.context = context;
@@ -817,6 +818,68 @@ int main() {
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
 
+    // A trusted launcher worker can now hand off the actual native ABI,
+    // without attempting GTA native calls or exposing its private capability.
+    // The queue owns the capability and model array, not the caller's stack.
+    assert(OpenVGameAuthorityQueuedStatus() == -2);
+    assert(OpenVGameAuthorityQueueNativeAsync(&api, &async_api, nullptr) == 0);
+    std::array<char, 44> mutable_token{};
+    std::memcpy(mutable_token.data(), private_token, sizeof(private_token));
+    openv_game_native_model mutable_models[] = {
+        {OPENV_AUTHORITY_VEHICLE, 0x12345678u}
+    };
+    openv_game_native_launch worker_launch{
+        sizeof(openv_game_native_launch), 4848, mutable_token.data(),
+        authorized, nullptr, mutable_models, 1
+    };
+    int worker_queue = -1;
+    std::thread queue_worker([&] {
+        worker_queue = OpenVGameAuthorityQueueNativeAsync(
+            &api, &async_api, &worker_launch);
+    });
+    queue_worker.join();
+    assert(worker_queue == 1 && OpenVGameAuthorityQueuedStatus() == 0);
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &api, &async_api, &worker_launch) == 0); // no overwrite
+    assert(OpenVGameAuthorityCancelQueuedNative() == 1);
+    assert(OpenVGameAuthorityCancelQueuedNative() == 0);
+    assert(OpenVGameAuthorityQueuedStatus() == -2);
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &api, &async_api, &worker_launch) == 1);
+    // Destroy the caller's credential/model content after enqueue; the
+    // eventual game-thread startup must use its independently owned copy.
+    mutable_token.fill('!');
+    mutable_models[0].model = 0;
+    const int before_handoff = fake.starts;
+    OnGameFrame.Fire();
+    assert(fake.starts == before_handoff);
+    assert(OpenVGameAuthorityQueuedStatus() == 0);
+    fake.frames = 0;
+    OnMainGameFrame.Fire();
+    assert(fake.starts == before_handoff + 1);
+    assert(OpenVGameAuthorityQueuedStatus() == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    assert(fake.handle != 0);
+    assert(OpenVGameAuthorityCancelQueuedNative() == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.handle == 0 && objects.size() == 1);
+
+    // Entitlement is checked again on the game thread, not trusted from
+    // queue time. A revoked launch never constructs a native session.
+    const int before_denied_handoff = fake.starts;
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &api, &async_api, &launch) == 1);
+    allowed = false;
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == -1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    assert(fake.starts == before_denied_handoff);
+    allowed = true;
+
     // A real Windows DLL must be loadable by absolute path, its ABI exports
     // must be resolved, and the same GTA game-thread callbacks must work.
 #ifdef _WIN32
@@ -861,6 +924,27 @@ int main() {
     assert(created == async_created + 1);
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    // Real Windows DLL handoff from a launcher worker: DLL loading and
+    // GetProcAddress occur only after the GTA main frame consumes the queue.
+    assert(OpenVGameAuthorityQueueNativeAsyncFromDll(
+        L"openv-gta-native-mock.dll", &launch) == 0);
+    int queued_dll = -1;
+    std::thread dll_launcher([&] {
+        queued_dll = OpenVGameAuthorityQueueNativeAsyncFromDll(
+            dll_path, &launch);
+    });
+    dll_launcher.join();
+    assert(queued_dll == 1 && OpenVGameAuthorityQueuedStatus() == 0);
+    const int created_before_queued_dll = created;
+    OnGameFrame.Fire();
+    assert(created == created_before_queued_dll);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
+    assert(created == created_before_queued_dll + 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
 #else
     assert(OpenVGameAuthorityStartNativeFromDll(
         L"/tmp/openv_world_bridge.so", &launch, error, sizeof(error)) == 0);

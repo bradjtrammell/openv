@@ -14,15 +14,20 @@
 #include <OpenVAuthorityGame.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <thread>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -110,6 +115,28 @@ std::thread::id native_owner_thread;
 // stage fails. A failed stage is retryable without replaying earlier stages.
 bool native_owner_stopped = false;
 bool native_owner_destroyed = false;
+// A launcher worker may hand off an owned, one-shot admission request without
+// calling GTA natives or leaking the bridge capability through process args.
+struct PendingNativeStart {
+    openv_game_native_api api{};
+    openv_game_native_async_api async_api{};
+    uint16_t bridge_port = 0;
+    std::wstring dll_path;
+    std::array<char, 44> capability{};
+    std::vector<openv_game_native_model> models;
+    openv_game_authority_check entitlement = nullptr;
+    void* entitlement_context = nullptr;
+    bool from_dll = false;
+    ~PendingNativeStart() {
+        volatile char* bytes = capability.data();
+        for (size_t i = 0; i < capability.size(); ++i) bytes[i] = 0;
+    }
+};
+std::mutex pending_native_mutex;
+std::unique_ptr<PendingNativeStart> pending_native_start;
+bool pending_native_dispatching = false;
+// This describes only launcher handoff, not authenticated admission.
+std::atomic<int> pending_native_status{-2};
 #ifdef _WIN32
 HMODULE native_bridge_module = nullptr;
 bool loading_native_bridge = false;
@@ -595,6 +622,81 @@ bool complete_async_api(const openv_game_native_async_api* api) {
 }
 } // namespace
 
+// This API is invoked by a trusted launcher component in the SAME process.
+// It only copies inputs; the first real GTA main frame does all native work.
+static int queue_native_start(
+    const openv_game_native_api* api,
+    const openv_game_native_async_api* async_api,
+    const wchar_t* path,
+    const openv_game_native_launch* launch) {
+    if (!launch || launch->struct_size != sizeof(*launch) ||
+        !launch->bridge_port || !launch->entitlement ||
+        !valid_private_capability(launch->bridge_capability) ||
+        launch->model_count > 256 ||
+        (launch->model_count && !launch->models))
+        return 0;
+    if (!path && (!api || api->struct_size != sizeof(*api) ||
+                  !complete_async_api(async_api)))
+        return 0;
+    try {
+        auto request = std::make_unique<PendingNativeStart>();
+        request->from_dll = path != nullptr;
+        if (path) {
+            request->dll_path = path;
+            if (request->dll_path.size() < 4 ||
+                request->dll_path.size() > 32767 ||
+                !((request->dll_path[0] >= L'A' &&
+                   request->dll_path[0] <= L'Z') ||
+                  (request->dll_path[0] >= L'a' &&
+                   request->dll_path[0] <= L'z')) ||
+                request->dll_path[1] != L':' ||
+                (request->dll_path[2] != L'\\' &&
+                 request->dll_path[2] != L'/'))
+                return 0;
+        } else {
+            request->api = *api;
+            request->async_api = *async_api;
+        }
+        request->bridge_port = launch->bridge_port;
+        std::memcpy(request->capability.data(),
+                    launch->bridge_capability, request->capability.size());
+        if (launch->model_count)
+            request->models.assign(launch->models,
+                                   launch->models + launch->model_count);
+        request->entitlement = launch->entitlement;
+        request->entitlement_context = launch->entitlement_context;
+        std::lock_guard<std::mutex> lock(pending_native_mutex);
+        if (pending_native_start || pending_native_dispatching) return 0;
+        pending_native_start = std::move(request);
+        pending_native_status.store(0, std::memory_order_release);
+        return 1;
+    } catch (...) { return 0; }
+}
+
+extern "C" int OpenVGameAuthorityQueueNativeAsync(
+    const openv_game_native_api* api,
+    const openv_game_native_async_api* async_api,
+    const openv_game_native_launch* launch) {
+    return queue_native_start(api, async_api, nullptr, launch);
+}
+
+extern "C" int OpenVGameAuthorityQueueNativeAsyncFromDll(
+    const wchar_t* path, const openv_game_native_launch* launch) {
+    return queue_native_start(nullptr, nullptr, path, launch);
+}
+
+extern "C" int OpenVGameAuthorityCancelQueuedNative(void) {
+    std::lock_guard<std::mutex> lock(pending_native_mutex);
+    if (!pending_native_start || pending_native_dispatching) return 0;
+    pending_native_start.reset();
+    pending_native_status.store(-2, std::memory_order_release);
+    return 1;
+}
+
+extern "C" int OpenVGameAuthorityQueuedStatus(void) {
+    return pending_native_status.load(std::memory_order_acquire);
+}
+
 extern "C" int OpenVGameAuthorityNativeActive(void) {
     return native_owner_session && native_admission_state == 1 &&
            activated && authorized() ? 1 : 0;
@@ -919,13 +1021,58 @@ extern "C" int OpenVGameAuthorityStartNativeAsyncFromDll(
                                       error, error_capacity);
 }
 
+static void dispatch_queued_native_start() {
+    std::unique_ptr<PendingNativeStart> request;
+    {
+        std::lock_guard<std::mutex> lock(pending_native_mutex);
+        if (!pending_native_start || pending_native_dispatching) return;
+        pending_native_dispatching = true;
+        request = std::move(pending_native_start);
+    }
+    int started = 0;
+    // No launcher request may replace a still-live authenticated session.
+    if (!native_owner_session && !bound_session && entities.empty()) {
+        openv_game_native_launch launch{
+            sizeof(openv_game_native_launch), request->bridge_port,
+            request->capability.data(), request->entitlement,
+            request->entitlement_context,
+            request->models.empty() ? nullptr : request->models.data(),
+            request->models.size()
+        };
+        char error[257]{};
+        try {
+            started = request->from_dll ?
+                OpenVGameAuthorityStartNativeAsyncFromDll(
+                    request->dll_path.c_str(), &launch, error, sizeof(error)) :
+                OpenVGameAuthorityStartNativeAsync(
+                    &request->api, &request->async_api,
+                    &launch, error, sizeof(error));
+        } catch (...) { started = 0; }
+        // Never let private bridge diagnostics reach GTA logs or UI.
+        volatile char* bytes = error;
+        for (size_t i = 0; i < sizeof(error); ++i) bytes[i] = 0;
+    }
+    // Destroy the owned secret snapshot before exposing handoff completion.
+    request.reset();
+    {
+        std::lock_guard<std::mutex> lock(pending_native_mutex);
+        pending_native_status.store(started == 1 ? 1 : -1,
+                                    std::memory_order_release);
+        pending_native_dispatching = false;
+    }
+}
+
 static InitFunction openvNativeGameFrame([] {
     // OnGameFrame may also run from the loading watchdog thread. GTA
     // natives and authority entity handles must only run on the main thread.
     OnMainGameFrame.Connect([] {
         observe_main_frame();
-        if (!main_frame_ready_on_caller() ||
-            !bound_session || !on_game_thread()) return;
+        if (!main_frame_ready_on_caller()) return;
+        // The trusted launcher may enqueue from a worker, but only the real
+        // GTA main frame may load the DLL and start authenticated admission.
+        // Async start queues its network worker; no synchronous join here.
+        dispatch_queued_native_start();
+        if (!bound_session || !on_game_thread()) return;
         if (native_owner_session && native_admission_state == 0 &&
             !activated) {
             // poll_start only reads a completed join worker; no network I/O
