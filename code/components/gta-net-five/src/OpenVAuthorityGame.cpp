@@ -14,6 +14,7 @@
 #include <OpenVAuthorityGame.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -66,6 +67,11 @@ struct Tracked {
 
 std::unordered_map<uint64_t, Tracked> entities;
 std::unordered_set<uint64_t> allowed_models;
+// GTA model streaming is asynchronous. Multiple nearby replicas can share a
+// model; never flood REQUEST_MODEL once per entity on every rendered frame.
+// This map is accessed only on the bound game thread and is reset on unbind.
+std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> model_requests;
+constexpr auto MODEL_REQUEST_INTERVAL = std::chrono::milliseconds(250);
 uint64_t model_key(uint32_t kind, uint32_t model) {
     return (uint64_t(kind) << 32) | model;
 }
@@ -200,10 +206,22 @@ bool model_ready(uint32_t kind, uint32_t model) {
         return false;
     bool loaded = false;
     if (!native_result(HAS_MODEL_LOADED, loaded, model)) return false;
-    if (loaded) return true;
-    // Model request is the only side effect on a deferred spawn. No game
-    // entity is created until the model has finished streaming.
-    native_void(REQUEST_MODEL, model);
+    const auto key = model_key(kind, model);
+    if (loaded) {
+        model_requests.erase(key);
+        return true;
+    }
+    // The same GTA model can be requested by hundreds of numeric entities.
+    // Coalesce requests by (kind, model) for 250 ms while continuing to check
+    // HAS_MODEL_LOADED on every retry. Failed native requests are retryable.
+    try {
+        const auto now = std::chrono::steady_clock::now();
+        const auto previous = model_requests.find(key);
+        if (previous != model_requests.end() &&
+            now - previous->second < MODEL_REQUEST_INTERVAL)
+            return false;
+        if (native_void(REQUEST_MODEL, model)) model_requests[key] = now;
+    } catch (...) { return false; }
     return false;
 }
 
@@ -310,6 +328,7 @@ extern "C" int OpenVGameAuthorityBind(
     authorization_context = context;
     activated = false;
     allowed_models.clear();
+    model_requests.clear();
     return 1;
 }
 
@@ -351,6 +370,7 @@ extern "C" int OpenVGameAuthorityUnbind(void* session) {
     authorization_callback = nullptr;
     authorization_context = nullptr;
     allowed_models.clear();
+    model_requests.clear();
     game_thread = std::thread::id{};
     return 1;
 }

@@ -268,3 +268,17 @@ closed. An aliased handle is never treated as a newly allocated proxy and is
 never deleted during failed-spawn cleanup. Deterministic production-adapter
 regressions inject aliased local and remote handles. This does not implement
 OneSync network ownership or prove GTA V gameplay.
+
+
+## Coalesced GTA model streaming (2026-10-26)
+
+The real GTA main-thread adapter checks `HAS_MODEL_LOADED` on every deferred
+spawn, but throttles `REQUEST_MODEL` to at most one successful request per
+250 ms for each `(kind, model)` pair. Multiple remote player or vehicle
+replicas using the same unloaded model no longer flood the game engine with
+identical streaming requests every render frame. Distinct permitted models
+can be requested independently. The request cache is cleared on unbind and
+when the model becomes loaded. Missing or failing GTA native handlers remain
+retryable; no entity is ACKed before its model is loaded. Deterministic
+production-source mock tests cover shared-model coalescing and independent
+vehicle requests. Actual GTA V gameplay remains NOT_RUN.
