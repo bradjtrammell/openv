@@ -56,6 +56,59 @@ spawn returns 0 without creating an entity. The authority pump retries the
 unacknowledged snapshot without removing already active entities. Cleanup
 continues after admission is revoked.
 
+## Authenticated native authority session owner
+
+The game component now owns the native numeric authority lifecycle rather than
+requiring a separate caller to manually sequence bind/start/activate/stop.
+The entry points are `OpenVGameAuthorityStartNative`,
+`OpenVGameAuthorityStopNative` and `OpenVGameAuthorityNativeActive`.
+
+A legitimate game launcher must load the **matching, locally verified**
+`openv-server` native shared library, resolve
+`openv_authority_abi_version`, `openv_authority_create`,
+`openv_authority_configure_position_source`, `openv_authority_start`,
+`openv_authority_tick`, `openv_authority_stop` and
+`openv_authority_destroy`, and populate `openv_game_native_api`.
+Those functions are C ABI version 1; the host must verify the library
+provenance, bitness, ABI version and exported symbols before using them.
+**No arbitrary DLL search, executable injection, entitlement bypass or
+launcher command-line secret transfer is implemented here.**
+
+The trusted launcher supplies an `openv_game_native_launch` directly in
+private process memory: a loopback bridge port, exactly 43 canonical
+base64url capability characters, a live nonblocking entitlement/session
+authorization callback and an independently verified model allowlist
+(maximum 256 entries). Never pass or log the capability through arguments,
+environment variables, URLs or telemetry. The launch struct and function
+table must remain readable for the duration of the synchronous start call;
+the native library copies the capability into its private session.
+
+Call `OpenVGameAuthorityStartNative` on the **actual GTA game thread outside
+`OnGameFrame`**, after lawful ownership and game initialization are verified.
+It validates the ABI, creates the real native bridge session, binds the
+engine callbacks, configures a 50ms local avatar sampler with a 1000ms
+heartbeat, validates model policy using GTA natives, samples the actual
+local ped, performs the authenticated numeric join and activates game-frame
+replication. A failed join cannot be reused; cleanup is attempted and the
+caller must retry `OpenVGameAuthorityStopNative` if pending. The game frame
+only invokes `openv_authority_tick`, which consumes an authenticated
+worker mailbox without network I/O.
+
+On logout, engine shutdown, or entitlement loss, call
+`OpenVGameAuthorityStopNative` from that same game thread **outside the
+frame callback**. It deactivates new replication, asks the native session
+to withdraw and despawn tracked entities, unbinds game callbacks, and
+destroys the native session. A failed stop retains all callback targets
+and the session for retry; do not unload the game component or native DLL
+until stop succeeds. Frame reentrancy and foreign-thread teardown are
+rejected.
+
+This is **not** automatic launcher integration: the legitimate launcher
+must still deliver its private bridge handle and resolve the native DLL
+into the game process, and the full Windows game executable must compile
+and launch with its lawful runtime dependencies. These are tracked as
+remaining integration work, not claimed as completed.
+
 ## Verification and remaining work
 
 `tests/openv_gta_native_adapter.cpp` compiles the **same production source**

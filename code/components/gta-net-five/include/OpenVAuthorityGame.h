@@ -79,6 +79,72 @@ OPENV_GAME_API int OpenVGameAuthorityDespawn(
 OPENV_GAME_API int OpenVGameAuthorityReadLocal(
     void* context, openv_authority_position* position);
 
+
+/*
+ * Native session ownership: a legitimately entitled launcher resolves the
+ * matching openv-server native C ABI and supplies these function pointers
+ * through a private in-process call. No bridge capability is read from
+ * arguments, environment variables, URLs or logs by this game component.
+ *
+ * These layouts mirror the authority ABI v1 C structs. The owner checks
+ * struct_size and ABI before passing them to the native bridge. Start/stop
+ * must execute on the GTA game thread, outside OnGameFrame; start can block
+ * for authenticated loopback admission, but each subsequent tick cannot.
+ */
+typedef struct openv_game_native_config {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint16_t bridge_port;
+    const char* bridge_capability;
+    uint32_t poll_wait_ms;
+    uint32_t bridge_io_timeout_ms;
+} openv_game_native_config;
+
+typedef struct openv_game_native_callbacks {
+    uint32_t struct_size;
+    int (*authorized)(void*);
+    int (*spawn)(void*, const openv_authority_entity*, uint64_t*);
+    int (*move)(void*, uint64_t, const openv_authority_entity*);
+    int (*despawn)(void*, uint64_t, const openv_authority_entity*);
+} openv_game_native_callbacks;
+
+typedef struct openv_game_native_api {
+    uint32_t struct_size;
+    uint32_t (*abi_version)(void);
+    void* (*create)(const openv_game_native_config*,
+                    const openv_game_native_callbacks*, void*);
+    int (*configure_position_source)(void*,
+        int (*reader)(void*, openv_authority_position*), void*,
+        uint32_t, uint32_t, double, double);
+    int (*start)(void*, double, double, double, double, char*, size_t);
+    int (*tick)(void*, openv_authority_frame*);
+    int (*stop)(void*);
+    int (*destroy)(void*);
+} openv_game_native_api;
+
+typedef struct openv_game_native_model {
+    uint32_t kind;
+    uint32_t model;
+} openv_game_native_model;
+
+typedef struct openv_game_native_launch {
+    uint32_t struct_size;
+    uint16_t bridge_port;
+    const char* bridge_capability; /* ephemeral 43-character private token */
+    openv_game_authority_check entitlement; /* live, nonblocking snapshot */
+    void* entitlement_context;
+    const openv_game_native_model* models; /* independently verified policy */
+    size_t model_count; /* 0..256 */
+} openv_game_native_launch;
+
+/* 1 on admitted startup; 0 on denial/failure. Error never includes secrets. */
+OPENV_GAME_API int OpenVGameAuthorityStartNative(
+    const openv_game_native_api* api, const openv_game_native_launch* launch,
+    char* error, size_t error_capacity);
+/* Retryable teardown. Retains the session and callbacks on failed cleanup. */
+OPENV_GAME_API int OpenVGameAuthorityStopNative(void);
+OPENV_GAME_API int OpenVGameAuthorityNativeActive(void);
+
 #ifdef __cplusplus
 }
 #endif

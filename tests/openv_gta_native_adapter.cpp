@@ -116,6 +116,94 @@ openv_authority_entity player(uint64_t id) {
 openv_authority_entity vehicle(uint64_t id) {
     return {id, OPENV_AUTHORITY_VEHICLE, 0x12345678u, 1, 0, 12, 22, 32, 90};
 }
+
+struct FakeAuthority {
+    openv_game_native_callbacks callbacks{};
+    void* context = nullptr;
+    int (*reader)(void*, openv_authority_position*) = nullptr;
+    void* reader_context = nullptr;
+    uint64_t handle = 0;
+    int frames = 0;
+    int starts = 0;
+    int stops = 0;
+    int destroys = 0;
+    bool fail_join = false;
+} fake;
+uint32_t fake_abi() { return OPENV_AUTHORITY_ABI_VERSION; }
+void* fake_create(const openv_game_native_config* config,
+                  const openv_game_native_callbacks* callbacks, void* context) {
+    assert(config->struct_size == sizeof(*config));
+    assert(config->abi_version == OPENV_AUTHORITY_ABI_VERSION);
+    assert(config->bridge_port == 4848);
+    assert(config->poll_wait_ms == 250);
+    assert(config->bridge_io_timeout_ms == 10000);
+    assert(std::strlen(config->bridge_capability) == 43);
+    assert(callbacks->struct_size == sizeof(*callbacks));
+    fake.callbacks = *callbacks;
+    fake.context = context;
+    return &fake;
+}
+int fake_configure(void* authority_session,
+                   int (*reader)(void*, openv_authority_position*),
+                   void* context, uint32_t interval, uint32_t heartbeat,
+                   double distance, double heading) {
+    assert(authority_session == &fake);
+    assert(interval == 50 && heartbeat == 1000);
+    assert(distance == 0.05 && heading == 1.0);
+    fake.reader = reader;
+    fake.reader_context = context;
+    return 1;
+}
+int fake_start(void* authority_session, double x, double y, double z, double heading,
+               char* error, size_t capacity) {
+    assert(authority_session == &fake);
+    assert(x == 1 && y == 2 && z == 3 && heading == 45);
+    openv_authority_position sample{};
+    assert(fake.reader(fake.reader_context, &sample) == 1);
+    assert(sample.x == 1 && sample.y == 2);
+    assert(error && capacity > 0);
+    ++fake.starts;
+    return fake.fail_join ? 0 : 1;
+}
+int fake_tick(void* authority_session, openv_authority_frame* frame) {
+    assert(authority_session == &fake);
+    assert(frame->struct_size == sizeof(*frame));
+    assert(OpenVGameAuthorityStopNative() == 0); // never block in OnGameFrame
+    if (fake.frames == 0) {
+        auto p = player(400);
+        assert(fake.callbacks.authorized(fake.context) == 1);
+        assert(fake.callbacks.spawn(fake.context, &p, &fake.handle) == 1);
+        assert(fake.handle != 0);
+    } else if (fake.frames == 1) {
+        auto p = player(400);
+        p.sequence = 2;
+        p.x = 99;
+        assert(fake.callbacks.move(fake.context, fake.handle, &p) == 1);
+    }
+    ++fake.frames;
+    frame->status = 1;
+    frame->live_entities = 1;
+    return 1;
+}
+int fake_stop(void* authority_session) {
+    assert(authority_session == &fake);
+    ++fake.stops;
+    if (fake.handle) {
+        auto p = player(400);
+        assert(fake.callbacks.despawn(fake.context, fake.handle, &p) == 1);
+        fake.handle = 0;
+    }
+    return 1;
+}
+int fake_destroy(void* authority_session) {
+    assert(authority_session == &fake);
+    ++fake.destroys;
+    return 1;
+}
+openv_game_native_api fake_api() {
+    return {sizeof(openv_game_native_api), fake_abi, fake_create,
+            fake_configure, fake_start, fake_tick, fake_stop, fake_destroy};
+}
 } // namespace
 
 int main() {
@@ -190,5 +278,62 @@ int main() {
     assert(OpenVGameAuthorityDespawn(nullptr, handle, &p) == 1);
     assert(OpenVGameAuthorityDeactivate(&session) == 1);
     assert(OpenVGameAuthorityUnbind(&session) == 1);
+
+    // Full native C ABI lifecycle: game ped -> authenticated bridge join ->
+    // nonblocking GTA frame replication -> teardown after entitlement loss.
+    const char private_token[] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    static_assert(sizeof(private_token) == 44, "43-byte capability");
+    const openv_game_native_model models[] = {
+        {OPENV_AUTHORITY_VEHICLE, 0x12345678u}
+    };
+    openv_game_native_launch launch{
+        sizeof(openv_game_native_launch), 4848, private_token,
+        authorized, nullptr, models, 1
+    };
+    auto api = fake_api();
+    char error[128]{};
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    api.abi_version = []() -> uint32_t { return 999; };
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    api = fake_api();
+    allowed = false;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
+    allowed = true;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    assert(fake.starts == 1 && fake.destroys == 0);
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
+    OnGameFrame.Fire();
+    assert(fake.frames == 1 && fake.handle != 0);
+    assert(objects.count(int(fake.handle)) == 1);
+    OnGameFrame.Fire();
+    assert(fake.frames == 2);
+    assert(objects.at(int(fake.handle)).x == 99);
+    int foreign_stop = -1;
+    std::thread other([&] { foreign_stop = OpenVGameAuthorityStopNative(); });
+    other.join();
+    assert(foreign_stop == 0);
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    allowed = false;
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.stops == 1 && fake.destroys == 1);
+    assert(fake.handle == 0 && objects.size() == 1);
+    OnGameFrame.Fire();
+    assert(fake.frames == 2);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+
+    // Failed join is single-use and cleans up without activating game frames.
+    allowed = true;
+    fake.fail_join = true;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 0);
+    assert(fake.starts == 2 && fake.stops == 2 && fake.destroys == 2);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    fake.fail_join = false;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.starts == 3 && fake.stops == 3 && fake.destroys == 3);
+
     std::cout << "OpenV GTA engine native adapter: PASS\n";
 }
