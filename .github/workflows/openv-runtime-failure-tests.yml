@@ -1,0 +1,21 @@
+name: OpenV runtime failure diagnostics tests
+on:
+  pull_request:
+    paths:
+      - 'tools/openv_runtime_failure.py'
+      - 'tests/test_openv_runtime_failure.py'
+      - '.github/workflows/openv-runtime-failure-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run offline runtime diagnosis regression tests
+        run: python -m unittest discover -s tests -p test_openv_runtime_failure.py -v

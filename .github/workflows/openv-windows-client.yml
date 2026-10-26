@@ -13,6 +13,8 @@ on:
       - 'tools/stage_msvc_runtime.py'
       - 'tools/stage_cef_runtime.py'
       - 'tools/stage_open_runtime.py'
+      - 'tools/openv_runtime_failure.py'
+      - 'tests/test_openv_runtime_failure.py'
       - 'tests/test_stage_open_runtime.py'
       - 'tests/test_stage_msvc_runtime.py'
       - 'tests/test_stage_cef_runtime.py'
@@ -303,6 +305,13 @@ jobs:
           path: openv-test-runtime/
           if-no-files-found: error
           retention-days: 7
+      - name: Diagnose exact Windows runtime blockers
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/openv_runtime_failure.py --audit build-report/runtime-static-audit.json --open-runtime build-report/open-runtime-provenance.json --report build-report/runtime-failure-summary.json --github-summary $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime diagnostic tool failed; inspect build-report' }
       - name: Inventory generated UI bundles
         if: always()
         shell: pwsh
@@ -333,4 +342,4 @@ jobs:
           retention-days: 7
       - name: Enforce build result
         if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.msvc.outcome != 'success' || steps.cef.outcome != 'success' || steps.open_deps.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
-        run: throw 'OpenV Windows build, source-built UI, static dependency audit, or byte-for-byte staged runtime verification failed. Download build-report and inspect diagnostics.'
+        run: throw 'OpenV Windows build failed; see the exact dependency annotations above, GitHub job summary and build-report/runtime-failure-summary.json. Gameplay remains unverified.'
