@@ -353,6 +353,21 @@ int main() {
     auto p = player(100);
     assert(OpenVGameAuthoritySpawn(nullptr, &p, &handle) == 0);
     assert(handle == 0 && requested == 1 && created == 0);
+    // Repeated entities of the same unloaded model must not request it on
+    // every game frame. The loaded state is still probed on every attempt.
+    auto waiting_player = player(888);
+    uint64_t waiting_handle = 9;
+    assert(OpenVGameAuthoritySpawn(nullptr, &waiting_player, &waiting_handle) == 0);
+    assert(waiting_handle == 0 && requested == 1 && created == 0);
+    assert(OpenVGameAuthoritySpawn(nullptr, &p, &waiting_handle) == 0);
+    assert(requested == 1);
+    // A different permitted model is independently requested, not blocked by
+    // the player model's cooldown.
+    auto waiting_vehicle = vehicle(889);
+    assert(OpenVGameAuthoritySpawn(nullptr, &waiting_vehicle, &waiting_handle) == 0);
+    assert(requested == 2 && waiting_handle == 0);
+    assert(OpenVGameAuthoritySpawn(nullptr, &waiting_vehicle, &waiting_handle) == 0);
+    assert(requested == 2 && created == 0);
     loaded = true;
     assert(OpenVGameAuthoritySpawn(nullptr, &p, &handle) == 1);
     assert(handle == 11 && created == 1);
