@@ -365,6 +365,8 @@ int main() {
     p.x = 26;
     assert(OpenVGameAuthorityMove(nullptr, handle, &p) == 1);
     assert(objects.at(11).x == 26 && moved == 2);
+    assert(OpenVGameAuthorityDespawn(nullptr, handle, &stale) == 0);
+    assert(objects.count(11) == 1);
 
     auto v = vehicle(200);
     uint64_t vehicle_handle = 0;
