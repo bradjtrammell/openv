@@ -1,3 +1,45 @@
+## Nonblocking authenticated native admission (2026-10-26)
+
+The GTA adapter now consumes the private server's existing additive ABI v1
+`openv_authority_start_async` and `openv_authority_poll_start` exports.
+A trusted, lawfully entitled launcher calls
+`OpenVGameAuthorityStartNativeAsyncFromDll(absolute_local_dll_path, launch,
+error, capacity)` on the **observed GTA main game thread, outside a frame**.
+The matching in-memory function-table path is
+`OpenVGameAuthorityStartNativeAsync(api, async_api, launch, error, capacity)`.
+The legacy synchronous entry points remain unchanged for compatibility.
+
+**Return 1 means admission has been queued, NOT that the server admitted the
+client.** `OpenVGameAuthorityNativeAdmissionStatus()` returns -2 when no
+native session is owned, 0 while the private bridge is joining, 1 only after
+the authenticated bridge ACK is validated and the GTA callbacks are activated,
+and -1 on rejection or entitlement withdrawal. The status getter must be
+called on the observed game thread; a foreign-thread call returns -2.
+`OpenVGameAuthorityNativeActive()` remains false until admission completes.
+
+The production `OnMainGameFrame` callback polls `poll_start` only while
+joining, and never dispatches entity creation or movement while pending.
+The bridge's network join runs on its own worker. The frame poll performs
+no network I/O or wait for unfinished admission; it transitions to active
+only after a verified server acknowledgment. The loading watchdog
+`OnGameFrame` cannot poll or activate. A rejection remains inactive and
+cannot be retried until `OpenVGameAuthorityStopNative()` succeeds on the
+same game thread **outside the frame**. Teardown cancels pending joins,
+withdraws game handles, and retains DLL callbacks across retryable failures.
+Raw bridge diagnostics and the 43-character capability never enter UI logs.
+
+The Windows DLL path requires both async exports and all existing ABI v1
+exports; it refuses incompatible DLLs before creating a session. Linux GCC
+and Windows MSVC compile the production adapter with deterministic frame,
+rejection, cancellation and entitlement-loss tests; Windows additionally
+loads an actual mock DLL to exercise `GetProcAddress` and queued activation.
+
+This is an integrated nonblocking admission mechanism, **not** automatic
+launcher-to-game credential delivery. An authorized launcher still must
+privately hand off the capability on the game thread. Actual GTA V launch,
+licensed two-player gameplay, OneSync ownership and resource execution are
+NOT RUN. The proxies are still local-only, not OneSync network entities.
+
 ## Main-game-thread readiness and trusted launcher handoff (2026-10-26)
 
 The engine component now exports `OpenVGameAuthorityMainThreadReady()`.
