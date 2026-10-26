@@ -1,3 +1,39 @@
+## Trusted in-process launcher handoff to GTA main frame (2026-10-26)
+
+The native GTA adapter now provides `OpenVGameAuthorityQueueNativeAsync`
+(for an already verified in-process ABI table) and
+`OpenVGameAuthorityQueueNativeAsyncFromDll` (for an independently verified,
+absolute local Windows DLL path). A legitimately entitled launcher component
+can call either from its own worker thread **without calling GTA natives**.
+The request owns copies of the 43-character private bridge capability,
+model allowlist (maximum 256 entries), port and DLL path. It never passes
+secrets via command lines, environment variables, URLs or UI logs.
+
+The next real `OnMainGameFrame` consumes the one-shot request on the pinned
+GTA thread, loads the Windows bridge DLL if required, and invokes
+`OpenVGameAuthorityStartNativeAsync` or its DLL variant. The bridge's
+authenticated join runs on its existing worker; the main frame only polls
+completed admission. `OpenVGameAuthorityQueuedStatus` is thread-safe and
+reports **-2** idle/cancelled, **0** queued, **1** dispatched (not yet
+authenticated), **-1** rejected. A separate game-thread call to
+`OpenVGameAuthorityNativeAdmissionStatus` must return **1** before gameplay
+replication is considered admitted. `OpenVGameAuthorityCancelQueuedNative`
+only cancels an unconsumed request. Duplicate pending requests are rejected,
+and a queued request cannot replace an active session.
+
+The entitlement callback and context remain live caller-owned references
+through the complete session; the launcher must keep them valid until
+`OpenVGameAuthorityStopNative` finishes. It must arrange game-thread
+teardown on logout/revocation and retry failed cleanup; cancellation is
+not a substitute for stopping an admitted native session. The in-process
+handoff is a production adapter API, **not** an external-process credential
+channel or an automatic launch hook. The actual entitled launcher still
+needs to call it from a verified in-game component. OneSync-owned entities,
+resource execution, full Windows runtime and two-PC GTA gameplay remain
+unverified. The GTA frame performs one-time DLL loading on handoff; a
+slow disk or antivirus may cause a one-time hitch, which must be measured
+in a real licensed game session.
+
 ## Nonblocking authenticated native admission (2026-10-26)
 
 The GTA adapter now consumes the private server's existing additive ABI v1

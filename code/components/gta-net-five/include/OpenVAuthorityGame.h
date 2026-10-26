@@ -192,6 +192,30 @@ OPENV_GAME_API int OpenVGameAuthorityStartNativeAsyncFromDll(
     const openv_game_native_launch* launch,
     char* error, size_t error_capacity);
 OPENV_GAME_API int OpenVGameAuthorityNativeAdmissionStatus(void);
+/*
+ * Trusted in-process launcher -> GTA main-thread handoff. The launcher worker
+ * queues one asynchronous admission without loading DLLs or calling GTA
+ * natives. The adapter owns a copy of the private capability, DLL path and
+ * model policy until dispatch on the next real OnMainGameFrame.
+ *
+ * Entitlement callback/context and direct ABI function pointers must remain
+ * valid through dispatch and until the native session is stopped. Never
+ * transfer the private capability by command line, environment, URL or log.
+ *
+ * QueuedStatus: -2 idle/cancelled, 0 queued, 1 dispatched to the native async
+ * API (NOT admitted), -1 rejected. Query NativeAdmissionStatus for verified
+ * server admission. Queue, cancel and queued-status are thread-safe.
+ * Cancellation affects only requests not yet consumed by the game thread.
+ */
+OPENV_GAME_API int OpenVGameAuthorityQueueNativeAsync(
+    const openv_game_native_api* api,
+    const openv_game_native_async_api* async_api,
+    const openv_game_native_launch* launch);
+OPENV_GAME_API int OpenVGameAuthorityQueueNativeAsyncFromDll(
+    const wchar_t* absolute_library_path,
+    const openv_game_native_launch* launch);
+OPENV_GAME_API int OpenVGameAuthorityCancelQueuedNative(void);
+OPENV_GAME_API int OpenVGameAuthorityQueuedStatus(void);
 /* Retryable teardown. Retains the session and callbacks on failed cleanup. */
 OPENV_GAME_API int OpenVGameAuthorityStopNative(void);
 OPENV_GAME_API int OpenVGameAuthorityNativeActive(void);
