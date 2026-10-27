@@ -107,7 +107,14 @@ openv_game_native_async_api native_owner_async_api{};
 // -2 idle, -1 rejected (owner must stop), 0 joining, 1 admitted.
 // Game-thread-only; no status or secret is shared with a launcher worker.
 int native_admission_state = -2;
+// Async join must not remain pending forever if the bridge worker stalls.
+// The bridge I/O timeout is 10s; allow 20s for its admission lifecycle.
+constexpr auto NATIVE_ADMISSION_TIMEOUT = std::chrono::seconds(20);
+std::chrono::steady_clock::time_point native_admission_started{};
 void* native_owner_session = nullptr;
+// Launcher workers can queue without touching GTA-thread-owned session state.
+// This atomic gate prevents accepting another private bearer during teardown.
+std::atomic<bool> native_session_owned{false};
 // The game binding clears game_thread on successful unbind. Preserve the
 // original owner thread until native destroy finishes (which can fail).
 std::thread::id native_owner_thread;
@@ -678,7 +685,8 @@ static int queue_native_start(
         request->entitlement = launch->entitlement;
         request->entitlement_context = launch->entitlement_context;
         std::lock_guard<std::mutex> lock(pending_native_mutex);
-        if (pending_native_start || pending_native_dispatching) return 0;
+        if (pending_native_start || pending_native_dispatching ||
+            native_session_owned.load(std::memory_order_acquire)) return 0;
         pending_native_start = std::move(request);
         pending_native_status.store(0, std::memory_order_release);
         return 1;
@@ -757,6 +765,8 @@ extern "C" int OpenVGameAuthorityStopNative(void) {
         native_owner_destroyed = true;
     }
     native_owner_session = nullptr;
+    native_session_owned.store(false, std::memory_order_release);
+    native_admission_started = {};
     native_owner_thread = std::thread::id{};
     native_owner_api = {};
     native_owner_async_api = {};
@@ -837,6 +847,7 @@ static int start_native_impl(
         return 0;
     }
     native_owner_thread = std::this_thread::get_id();
+    native_session_owned.store(true, std::memory_order_release);
     auto fail = [&](const char* message) {
         // A failed authenticated join is single-use. Attempt orderly cleanup,
         // but retain the native session if stop cannot yet remove its handles.
@@ -896,7 +907,10 @@ static int start_native_impl(
                                "authenticated numeric multiplayer join failed");
     // A queued async join is NOT an authenticated session. OnMainGameFrame
     // polls the nonblocking authority API and activates only after exact ACK.
-    if (async_api) return 1;
+    if (async_api) {
+        native_admission_started = std::chrono::steady_clock::now();
+        return 1;
+    }
     if (!OpenVGameAuthorityActivate(native_owner_session))
         return fail("native authority game activation failed");
     native_admission_state = 1;
@@ -1128,7 +1142,12 @@ static InitFunction openvNativeGameFrame([] {
             !activated) {
             // poll_start only reads a completed join worker; no network I/O
             // or blocking admission on the GTA frame. Never expose errors.
-            if (!authorized()) {
+            if (!authorized() ||
+                std::chrono::steady_clock::now() - native_admission_started >=
+                    NATIVE_ADMISSION_TIMEOUT) {
+                // The authenticated join never completed within its bounded
+                // window. Never activate a late ACK; the host must stop and
+                // destroy the session outside the render callback.
                 native_admission_state = -1;
                 return;
             }
