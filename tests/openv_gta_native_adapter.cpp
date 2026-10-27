@@ -988,6 +988,24 @@ int main() {
     assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
     assert(created == created_before_queued_dll + 1);
     assert(OpenVGameAuthorityStopNative() == 1);
+    // The Windows DLL itself must not be loaded while GTA is still waiting
+    // for its local player ped. This is a real LoadLibrary/ABI fixture.
+    const auto local_ped_for_dll = objects.at(10);
+    objects.erase(10);
+    assert(OpenVGameAuthorityQueueNativeAsyncFromDll(
+        dll_path, &launch) == 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == 0);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    assert(GetModuleHandleW(L"openv-gta-native-mock.dll") == nullptr);
+    objects[10] = local_ped_for_dll;
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    OnMainGameFrame.Fire();
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
 #else
     assert(OpenVGameAuthorityStartNativeFromDll(
         L"/tmp/openv_world_bridge.so", &launch, error, sizeof(error)) == 0);
