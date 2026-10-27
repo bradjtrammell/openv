@@ -472,3 +472,27 @@ RETRY, server REVOKED, wrong-thread and unknown status, callback failure,
 exception, entitlement loss, irreversibility and cleanup. These tests
 do not establish a running GTA V process, real OneSync interoperability,
 or playable two-client multiplayer.
+
+### Bounded asynchronous admission and launcher overlap
+
+The real GTA `OnMainGameFrame` callback polls the native authority's
+nonblocking admission result. An async join that has not received a validated
+acknowledgment within **20 seconds** after successful `start_async` is
+irreversibly rejected, even if its worker eventually completes. No remote
+player or vehicle can be spawned from a late acknowledgment. The game host
+must observe `OpenVGameAuthorityNativeNeedsCleanup() == 1` and invoke
+`OpenVGameAuthorityStopNative()` on the original game thread **outside**
+the frame callback. The native session, engine handles, and DLL remain owned
+until retryable stop, unbind and destroy complete.
+
+Launcher workers also cannot enqueue a second private session while the
+adapter owns a native session (joining, admitted, revoked or retrying cleanup).
+This is an atomic cross-thread ownership check; it does not read or mutate
+GTA engine handles from the launcher thread. A new session can be queued only
+after complete teardown. This protects the one-shot private bearer from being
+silently consumed by an overlapping session. The separate 15-second avatar
+readiness timeout still begins at the first real GTA main frame.
+
+The 20-second watchdog is a local lifecycle safeguard, **not** proof of
+actual game launch, signed-session acceptance, OneSync interoperability or
+successful two-player gameplay.

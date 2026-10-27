@@ -4,6 +4,7 @@
 #include <ScriptEngine.h>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -224,6 +225,7 @@ struct FakeAuthority {
     bool fail_join = false;
     bool fail_async_poll = false;
     bool unexpected_async_poll = false;
+    bool keep_async_pending = false;
     int async_polls = 0;
     bool fail_stop_once = false;
     bool fail_destroy_once = false;
@@ -280,7 +282,7 @@ int fake_poll_start(void* authority_session, char* error, size_t capacity) {
     assert(error && capacity);
     assert(OpenVGameAuthorityMainThreadReady() == 1);
     ++fake.async_polls;
-    if (fake.async_polls == 1) return 0;
+    if (fake.keep_async_pending || fake.async_polls == 1) return 0;
     if (fake.unexpected_async_poll) return 2;
     return fake.fail_async_poll ? -1 : 1;
 }
@@ -828,6 +830,15 @@ int main() {
     assert(OpenVGameAuthorityStartNativeAsync(
         &api, &async_api, &launch, error, sizeof(error)) == 1);
     assert(fake.starts == starts_before_async + 1);
+    // A second launcher worker cannot queue another private bearer while
+    // admission is pending. This check must not read non-atomic game state.
+    int queued_while_joining = -1;
+    std::thread duplicate_launcher([&] {
+        queued_while_joining = OpenVGameAuthorityQueueNativeAsync(
+            &api, &async_api, &launch);
+    });
+    duplicate_launcher.join();
+    assert(queued_while_joining == 0);
     assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
     assert(OpenVGameAuthorityNativeActive() == 0);
     OnGameFrame.Fire();
@@ -839,6 +850,9 @@ int main() {
     assert(fake.async_polls == 2 && fake.frames == 1);
     assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
     assert(OpenVGameAuthorityNativeActive() == 1);
+    // Even after admission succeeds, a second private session cannot be
+    // queued until the first session's stop/destroy has fully completed.
+    assert(OpenVGameAuthorityQueueNativeAsync(&api, &async_api, &launch) == 0);
     assert(fake.handle && objects.count(int(fake.handle)) == 1);
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.handle == 0 && objects.size() == 1);
@@ -879,6 +893,27 @@ int main() {
     assert(fake.async_polls == 0 && fake.frames == 0);
     assert(OpenVGameAuthorityStopNative() == 1);
     allowed = true;
+
+    // An authenticated bridge worker can stall indefinitely after start.
+    // GTA must stop polling after its 20-second admission deadline, without
+    // activating entities, then permit a fresh join after orderly cleanup.
+    fake.keep_async_pending = true;
+    fake.frames = 0;
+    assert(OpenVGameAuthorityStartNativeAsync(
+        &api, &async_api, &launch, error, sizeof(error)) == 1);
+    OnMainGameFrame.Fire();
+    assert(fake.async_polls == 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20050));
+    OnMainGameFrame.Fire();
+    assert(fake.async_polls == 1); // deadline prevents a late bridge ACK
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+    assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(fake.frames == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    fake.keep_async_pending = false;
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
 
     // A queued join can also be cancelled before the next main frame.
     assert(OpenVGameAuthorityStartNativeAsync(
