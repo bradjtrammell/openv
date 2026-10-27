@@ -202,8 +202,11 @@ OPENV_GAME_API int OpenVGameAuthorityNativeAdmissionStatus(void);
  * valid through dispatch and until the native session is stopped. Never
  * transfer the private capability by command line, environment, URL or log.
  *
- * QueuedStatus: -2 idle/cancelled, 0 queued, 1 dispatched to the native async
- * API (NOT admitted), -1 rejected. Query NativeAdmissionStatus for verified
+ * A queued request waits up to 15 seconds for GTA's local player ped and
+ * position to become readable. Until then it remains cancellable and never
+ * creates a bridge session or consumes its private capability.
+ * QueuedStatus: -2 idle/cancelled, 0 queued/waiting for avatar, 1 dispatched
+ * to the native async API (NOT admitted), -1 rejected or timed out. Query NativeAdmissionStatus for verified
  * server admission. Queue, cancel and queued-status are thread-safe.
  * Cancellation affects only requests not yet consumed by the game thread.
  */
