@@ -1143,7 +1143,11 @@ int main(int argc, char** argv) {
         assert(OpenVGameAuthorityStartNativeAsyncFromDll(
             real_bridge_path, &rejected_launch, error, sizeof(error)) == 1);
         assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
-        for (int attempt = 0; attempt < 500 &&
+        assert(GetModuleHandleW(L"openv_world_bridge.dll") != nullptr);
+        // The genuine bridge may spend its full bounded I/O timeout waiting
+        // for an unreachable local endpoint. Keep driving GTA main frames
+        // through the 20-second admission watchdog; 5 seconds is insufficient.
+        for (int attempt = 0; attempt < 2500 &&
              OpenVGameAuthorityNativeAdmissionStatus() == 0; ++attempt) {
             OnMainGameFrame.Fire();
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1153,6 +1157,7 @@ int main(int argc, char** argv) {
         assert(created == created_before_rejection);
         assert(OpenVGameAuthorityStopNative() == 1);
         assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+        assert(GetModuleHandleW(L"openv_world_bridge.dll") == nullptr);
     }
 #else
     (void)argc;
