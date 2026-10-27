@@ -104,6 +104,9 @@ constexpr uint32_t MAX_SPAWNS_PER_GAME_FRAME = 8;
 uint32_t spawns_this_frame = 0;
 openv_game_native_api native_owner_api{};
 openv_game_native_async_api native_owner_async_api{};
+openv_game_native_stop_api native_owner_stop_api{};
+bool native_stop_in_progress = false;
+bool native_stop_failed = false;
 // -2 idle, -1 rejected (owner must stop), 0 joining, 1 admitted.
 // Only game-thread code mutates admission; workers can observe atomically.
 std::atomic<int> native_admission_state{-2};
@@ -795,6 +798,9 @@ extern "C" int OpenVGameAuthorityStopNative(void) {
     native_owner_thread = std::thread::id{};
     native_owner_api = {};
     native_owner_async_api = {};
+    native_owner_stop_api = {};
+    native_stop_in_progress = false;
+    native_stop_failed = false;
     native_admission_state = -2;
     native_owner_stopped = false;
     native_owner_destroyed = false;
@@ -860,6 +866,8 @@ static int start_native_impl(
     native_admission_state = async_api ? 0 : -2;
     native_owner_stopped = false;
     native_owner_destroyed = false;
+    native_stop_in_progress = false;
+    native_stop_failed = false;
     try {
         native_owner_session = api->create(&config, &callbacks, nullptr);
     } catch (...) { native_owner_session = nullptr; }
@@ -1021,6 +1029,14 @@ static int start_native_from_dll_impl(
         GetProcAddress(module, "openv_authority_configure_interest"));
     openv_game_native_async_api async_api{};
     async_api.struct_size = sizeof(async_api);
+    openv_game_native_stop_api stop_api{};
+    stop_api.struct_size = sizeof(stop_api);
+    if (asynchronous) {
+        stop_api.begin_stop = reinterpret_cast<decltype(stop_api.begin_stop)>(
+            GetProcAddress(module, "openv_authority_begin_stop"));
+        stop_api.poll_stop = reinterpret_cast<decltype(stop_api.poll_stop)>(
+            GetProcAddress(module, "openv_authority_poll_stop"));
+    }
     if (asynchronous) {
         async_api.start_async = reinterpret_cast<decltype(async_api.start_async)>(
             GetProcAddress(module, "openv_authority_start_async"));
@@ -1028,13 +1044,15 @@ static int start_native_from_dll_impl(
             GetProcAddress(module, "openv_authority_poll_start"));
     }
     if (!complete_native_api(&api) || !motion || !interest ||
-        (asynchronous && !complete_async_api(&async_api))) {
+        (asynchronous && (!complete_async_api(&async_api) ||
+                          !stop_api.begin_stop || !stop_api.poll_stop))) {
         FreeLibrary(module);
         native_error(error, error_capacity, "native bridge DLL ABI or exports mismatch");
         return 0;
     }
     bridge_motion = motion;
     bridge_interest = interest;
+    native_owner_stop_api = asynchronous ? stop_api : openv_game_native_stop_api{};
     native_bridge_module = module;
     loading_native_bridge = true;
     const int started = asynchronous ?
@@ -1047,6 +1065,7 @@ static int start_native_from_dll_impl(
     bridge_motion = nullptr;
     bridge_interest = nullptr;
     if (!started && !native_owner_session) {
+        native_owner_stop_api = {};
         // Startup failed before ownership was established, or orderly
         // rollback already destroyed the native session.
         if (native_bridge_module) {
@@ -1167,6 +1186,36 @@ static InitFunction openvNativeGameFrame([] {
         // GTA main frame may load the DLL and start authenticated admission.
         // Async start queues its network worker; no synchronous join here.
         dispatch_queued_native_start();
+        // A revoked DLL-backed session must not strand a network join or
+        // server-side player until an external host can synchronously stop it.
+        // The native bridge's two-phase teardown withdraws immediately, then
+        // reports completed I/O and engine-handle cleanup without waiting on
+        // an unfinished worker in this GTA frame. A failed authenticated
+        // leave remains owned for explicit out-of-frame host recovery.
+        if (native_owner_session && native_admission_state == -1 &&
+            native_owner_stop_api.begin_stop && native_owner_stop_api.poll_stop) {
+            if (native_stop_failed) return;
+            if (!native_stop_in_progress) {
+                int requested = 0;
+                try { requested = native_owner_stop_api.begin_stop(native_owner_session); }
+                catch (...) { requested = 0; }
+                if (requested != 1) { native_stop_failed = true; return; }
+                native_stop_in_progress = true;
+            }
+            int stopped = -1;
+            try { stopped = native_owner_stop_api.poll_stop(native_owner_session); }
+            catch (...) { stopped = -1; }
+            if (stopped == 1) {
+                // The native stop already completed its worker joins, GTA
+                // despawns and authenticated leave. Finish existing local
+                // unbind/destroy/DLL cleanup without repeating network I/O.
+                native_owner_stopped = true;
+                (void)OpenVGameAuthorityStopNative();
+            } else if (stopped != 0) {
+                native_stop_failed = true;
+            }
+            return;
+        }
         if (!bound_session || !on_game_thread()) return;
         if (native_owner_session && native_admission_state == 0 &&
             !activated) {

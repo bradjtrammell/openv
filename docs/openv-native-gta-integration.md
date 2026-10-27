@@ -525,3 +525,8 @@ readiness timeout still begins at the first real GTA main frame.
 The 20-second watchdog is a local lifecycle safeguard, **not** proof of
 actual game launch, signed-session acceptance, OneSync interoperability or
 successful two-player gameplay.
+
+
+### Nonblocking revoked-session teardown (native bridge ABI v1)
+
+DLL-backed asynchronous admission now requires the bridge's additive `openv_authority_begin_stop` and `openv_authority_poll_stop` exports. After revocation, failed admission or the 20-second admission watchdog, the next real GTA `OnMainGameFrame` withdraws the native authority and polls its teardown without waiting for unfinished network I/O. Engine handles are removed on the GTA thread; the authenticated server-side leave runs on a private worker. Only after successful teardown does the adapter unbind and unload the bridge DLL. A failed authenticated leave remains owned for an explicit out-of-frame host retry. Direct legacy function-table sessions retain their existing explicit stop contract. This does not add OneSync network ownership or assert that a licensed GTA V process has been exercised.

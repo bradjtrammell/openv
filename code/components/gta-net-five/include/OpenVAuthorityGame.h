@@ -152,6 +152,17 @@ typedef struct openv_game_native_async_api {
     int (*poll_start)(void*, char*, size_t);
 } openv_game_native_async_api;
 
+/* Additive native bridge teardown exports. Only the actual private DLL
+ * supplies these; no layout change to the existing authority API. The GTA
+ * frame can withdraw and poll without waiting on authenticated network I/O.
+ * poll_stop: 0 pending, 1 fully stopped, -1 failed (host fallback required).
+ */
+typedef struct openv_game_native_stop_api {
+    uint32_t struct_size;
+    int (*begin_stop)(void*);
+    int (*poll_stop)(void*);
+} openv_game_native_stop_api;
+
 typedef struct openv_game_native_model {
     uint32_t kind;
     uint32_t model;
@@ -204,7 +215,11 @@ OPENV_GAME_API int OpenVGameAuthorityStartNativeAsyncFromDll(
     char* error, size_t error_capacity);
 OPENV_GAME_API int OpenVGameAuthorityNativeAdmissionStatus(void);
 /* Game-thread-only: 1 means the native session is no longer trustworthy and
- * the host MUST schedule StopNative outside the render callback. The adapter
+ * the host MUST schedule StopNative outside the render callback for legacy
+ * direct function-table sessions. DLL-backed asynchronous sessions use the
+ * verified nonblocking native teardown exports on subsequent main frames;
+ * an unrecoverable leave failure still requires explicit host intervention.
+ * The adapter
  * retains the DLL, session and engine handles until retryable teardown works.
  * A revoked/failed authority frame can never reactivate this session.
  */
