@@ -127,11 +127,17 @@ struct PendingNativeStart {
     openv_game_authority_check entitlement = nullptr;
     void* entitlement_context = nullptr;
     bool from_dll = false;
+    // A valid launch can arrive before GTA has streamed its local player ped.
+    // Bound retries on the real main frame without consuming the bearer.
+    // Start the deadline at the first *actual* GTA frame, not enqueue time:
+    // loading GTA and reaching OnMainGameFrame can take much longer.
+    std::chrono::steady_clock::time_point first_avatar_wait{};
     ~PendingNativeStart() {
         volatile char* bytes = capability.data();
         for (size_t i = 0; i < capability.size(); ++i) bytes[i] = 0;
     }
 };
+constexpr auto QUEUED_AVATAR_READY_TIMEOUT = std::chrono::seconds(15);
 std::mutex pending_native_mutex;
 std::unique_ptr<PendingNativeStart> pending_native_start;
 bool pending_native_dispatching = false;
@@ -559,12 +565,14 @@ extern "C" int OpenVGameAuthorityDespawn(
     return 1;
 }
 
-extern "C" int OpenVGameAuthorityReadLocal(
-    void*, openv_authority_position* position) {
-    if (!authorized() || !position) return 0;
+// Only the real GTA game thread calls this helper. The queued launcher
+// preflight deliberately does not require an already bound native session:
+// binding before the local ped exists would consume the one-shot capability.
+static bool sample_local_avatar(openv_authority_position* position) {
+    if (!position) return false;
     int ped = 0;
     if (!native_result(PLAYER_PED_ID, ped) || !exists(ped))
-        return 0;
+        return false;
     // When seated, the vehicle's transform is the authoritative movement
     // origin. Ped heading can remain fixed relative to the seat while the
     // vehicle rotates; reporting it makes remote motion and proximity drift.
@@ -575,19 +583,23 @@ extern "C" int OpenVGameAuthorityReadLocal(
         openv_authority_position vehicle_sample{};
         if (read_position(current_vehicle, vehicle_sample)) {
             *position = vehicle_sample;
-            return 1;
+            return true;
         }
         // A live vehicle with an unreadable transform is not a valid
         // position sample; never substitute the occupant's potentially
         // inconsistent seat transform in the middle of vehicle movement.
-        return 0;
+        return false;
     }
     openv_authority_position sample{};
-    if (!read_position(ped, sample)) return 0;
+    if (!read_position(ped, sample)) return false;
     *position = sample;
-    return 1;
+    return true;
 }
 
+extern "C" int OpenVGameAuthorityReadLocal(
+    void*, openv_authority_position* position) {
+    return authorized() && sample_local_avatar(position) ? 1 : 0;
+}
 
 namespace {
 void native_error(char* output, size_t capacity, const char* message) {
@@ -1030,8 +1042,41 @@ static void dispatch_queued_native_start() {
         request = std::move(pending_native_start);
     }
     int started = 0;
+    bool defer_for_avatar = false;
     // No launcher request may replace a still-live authenticated session.
-    if (!native_owner_session && !bound_session && entities.empty()) {
+    // An authorized request is retained while GTA streams the real local ped
+    // and its position. Do not load the DLL or create a native session before
+    // that point; otherwise an early main frame permanently consumes the
+    // single-use private capability.
+    bool entitled = false;
+    try {
+        entitled = request->entitlement(request->entitlement_context) == 1;
+    } catch (...) { entitled = false; }
+    const bool idle = !native_owner_session && !bound_session &&
+                      entities.empty();
+    openv_authority_position local_avatar{};
+    // Sample once per frame. GTA natives can change between calls while
+    // the avatar streams; a second probe could consume a valid handoff.
+    const bool avatar_ready = idle && entitled &&
+                              sample_local_avatar(&local_avatar);
+    if (idle && entitled && !avatar_ready) {
+        const auto now = std::chrono::steady_clock::now();
+        if (request->first_avatar_wait == std::chrono::steady_clock::time_point{})
+            request->first_avatar_wait = now;
+        defer_for_avatar = now - request->first_avatar_wait <
+                           QUEUED_AVATAR_READY_TIMEOUT;
+    }
+    if (defer_for_avatar) {
+        defer_for_avatar = true;
+    }
+    if (defer_for_avatar) {
+        std::lock_guard<std::mutex> lock(pending_native_mutex);
+        pending_native_start = std::move(request);
+        pending_native_status.store(0, std::memory_order_release);
+        pending_native_dispatching = false;
+        return;
+    }
+    if (avatar_ready) {
         openv_game_native_launch launch{
             sizeof(openv_game_native_launch), request->bridge_port,
             request->capability.data(), request->entitlement,
