@@ -447,3 +447,28 @@ creation across frames, rejects duplicate retries and confirms full cleanup.
 This is frame-time protection for existing local-only GTA replicas. It does
 not add true OneSync network ownership, automatic lawful game launch, or
 licensed two-PC gameplay verification.
+
+## Authoritative native frame revocation and retry safety (2026-10-26)
+
+After a signed session has been admitted, the GTA adapter now interprets the
+actual numeric bridge frame status instead of discarding it. Only
+`OPENV_AUTHORITY_ACTIVE` and the transient `OPENV_AUTHORITY_RETRY` keep
+an admitted native session live. A revoked, wrong-thread, invalid, unknown,
+failed or throwing frame irreversibly disables replica dispatch for that
+session. A live entitlement callback changing to false also disables the
+next frame before any entity native runs; restoring the callback cannot
+resurrect the old session.
+
+The additive `OpenVGameAuthorityNativeNeedsCleanup` query reports the
+failed native session to its game-thread host. The host **must** schedule
+`OpenVGameAuthorityStopNative` outside the render callback and retry if
+engine-handle cleanup or native destruction fails. The game frame itself
+never invokes blocking stop/network teardown. The bridge DLL and engine
+handles remain owned until cleanup succeeds, preventing stale-handle
+recycling and accidental duplicate admissions.
+
+Deterministic GCC/MSVC production-adapter tests now exercise transient
+RETRY, server REVOKED, wrong-thread and unknown status, callback failure,
+exception, entitlement loss, irreversibility and cleanup. These tests
+do not establish a running GTA V process, real OneSync interoperability,
+or playable two-client multiplayer.

@@ -25,6 +25,17 @@ extern "C" {
 #define OPENV_AUTHORITY_PED 2u
 #define OPENV_AUTHORITY_VEHICLE 3u
 
+/* Native frame statuses from openv-server/native/openv_world_c_api.h.
+ * ACTIVE and RETRY alone permit an admitted session to remain live.
+ * REVOKED, WRONG_THREAD, INVALID_FRAME and unknown statuses fail closed.
+ */
+#define OPENV_GAME_FRAME_WAITING 0u
+#define OPENV_GAME_FRAME_ACTIVE 1u
+#define OPENV_GAME_FRAME_RETRY 2u
+#define OPENV_GAME_FRAME_REVOKED 3u
+#define OPENV_GAME_FRAME_WRONG_THREAD 4u
+#define OPENV_GAME_FRAME_INVALID_FRAME 5u
+
 typedef struct openv_authority_entity {
     uint64_t id;
     uint32_t kind;
@@ -192,6 +203,12 @@ OPENV_GAME_API int OpenVGameAuthorityStartNativeAsyncFromDll(
     const openv_game_native_launch* launch,
     char* error, size_t error_capacity);
 OPENV_GAME_API int OpenVGameAuthorityNativeAdmissionStatus(void);
+/* Game-thread-only: 1 means the native session is no longer trustworthy and
+ * the host MUST schedule StopNative outside the render callback. The adapter
+ * retains the DLL, session and engine handles until retryable teardown works.
+ * A revoked/failed authority frame can never reactivate this session.
+ */
+OPENV_GAME_API int OpenVGameAuthorityNativeNeedsCleanup(void);
 /*
  * Trusted in-process launcher -> GTA main-thread handoff. The launcher worker
  * queues one asynchronous admission without loading DLLs or calling GTA
