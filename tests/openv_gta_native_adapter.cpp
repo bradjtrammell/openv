@@ -305,6 +305,8 @@ int fake_tick(void* authority_session, openv_authority_frame* frame) {
     }
     ++fake.frames;
     frame->status = fake.forced_frame_status;
+    frame->revision = 99;
+    frame->local_entity_id = 777;
     frame->live_entities = 1;
     return 1;
 }
@@ -344,7 +346,7 @@ openv_game_native_async_api fake_async_api() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     static_assert(sizeof(openv_authority_entity) == 64, "numeric authority ABI drift");
     assert(OpenVGameAuthorityAbiVersion() == 1);
     register_natives();
@@ -850,11 +852,28 @@ int main() {
     assert(fake.async_polls == 2 && fake.frames == 1);
     assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
     assert(OpenVGameAuthorityNativeActive() == 1);
+    openv_game_native_telemetry progress{};
+    progress.struct_size = sizeof(progress);
+    std::thread observer([&] {
+        assert(OpenVGameAuthorityNativeTelemetry(&progress) == 1);
+    });
+    observer.join();
+    assert(progress.native_owned == 1 && progress.admission_status == 1);
+    assert(progress.main_frames > 0 && progress.replica_frames > 0);
+    assert(progress.live_entities == 1 && progress.local_entity_id == 777);
+    assert(progress.last_revision == 99);
+    assert(OpenVGameAuthorityNativeTelemetry(nullptr) == 0);
+    progress.struct_size = 0;
+    assert(OpenVGameAuthorityNativeTelemetry(&progress) == 0);
+    progress.struct_size = sizeof(progress);
     // Even after admission succeeds, a second private session cannot be
     // queued until the first session's stop/destroy has fully completed.
     assert(OpenVGameAuthorityQueueNativeAsync(&api, &async_api, &launch) == 0);
     assert(fake.handle && objects.count(int(fake.handle)) == 1);
     assert(OpenVGameAuthorityStopNative() == 1);
+    assert(OpenVGameAuthorityNativeTelemetry(&progress) == 1);
+    assert(progress.native_owned == 0 && progress.admission_status == -2 &&
+           progress.replica_frames == 0 && progress.live_entities == 0);
     assert(fake.handle == 0 && objects.size() == 1);
     assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
 
@@ -1110,7 +1129,34 @@ int main() {
     OnMainGameFrame.Fire();
     assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
     assert(OpenVGameAuthorityStopNative() == 1);
+    // Private CI only: the real DLL must load and reject an unreachable
+    // authenticated bridge without creating any GTA entities.
+    if (argc == 2 && std::strcmp(argv[1], "--real-bridge-rejection") == 0) {
+        wchar_t real_bridge_path[MAX_PATH]{};
+        const DWORD real_length = GetFullPathNameW(
+            L"build-native/sdk/bin/openv_world_bridge.dll", MAX_PATH,
+            real_bridge_path, nullptr);
+        assert(real_length > 0 && real_length < MAX_PATH);
+        openv_game_native_launch rejected_launch = launch;
+        rejected_launch.bridge_port = 1;
+        const int created_before_rejection = created;
+        assert(OpenVGameAuthorityStartNativeAsyncFromDll(
+            real_bridge_path, &rejected_launch, error, sizeof(error)) == 1);
+        assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+        for (int attempt = 0; attempt < 500 &&
+             OpenVGameAuthorityNativeAdmissionStatus() == 0; ++attempt) {
+            OnMainGameFrame.Fire();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+        assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+        assert(created == created_before_rejection);
+        assert(OpenVGameAuthorityStopNative() == 1);
+        assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    }
 #else
+    (void)argc;
+    (void)argv;
     assert(OpenVGameAuthorityStartNativeFromDll(
         L"/tmp/openv_world_bridge.so", &launch, error, sizeof(error)) == 0);
     assert(OpenVGameAuthorityStartNativeAsyncFromDll(

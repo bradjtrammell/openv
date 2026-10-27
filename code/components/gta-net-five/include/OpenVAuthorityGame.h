@@ -236,6 +236,24 @@ OPENV_GAME_API int OpenVGameAuthorityQueueNativeAsyncFromDll(
     const openv_game_native_launch* launch);
 OPENV_GAME_API int OpenVGameAuthorityCancelQueuedNative(void);
 OPENV_GAME_API int OpenVGameAuthorityQueuedStatus(void);
+/* Credential-free progress for a trusted launcher worker. No GTA natives,
+ * entitlement callbacks, pointers, tickets or capabilities are accessed.
+ * This is observational only, never an authentication or readiness proof.
+ * Counters other than main_frames reset when a native session is replaced.
+ */
+typedef struct openv_game_native_telemetry {
+    uint32_t struct_size;
+    int32_t queued_status;       /* -2 idle, -1 denied, 0 queued, 1 dispatched */
+    int32_t admission_status;    /* -2 idle, -1 revoked, 0 joining, 1 admitted */
+    uint32_t native_owned;       /* 1 until complete retryable teardown */
+    uint64_t main_frames;        /* actual GTA OnMainGameFrame callbacks */
+    uint64_t replica_frames;     /* accepted authority callbacks */
+    uint64_t last_revision;
+    uint64_t local_entity_id;
+    uint64_t live_entities;
+} openv_game_native_telemetry;
+OPENV_GAME_API int OpenVGameAuthorityNativeTelemetry(
+    openv_game_native_telemetry* out);
 /* Retryable teardown. Retains the session and callbacks on failed cleanup. */
 OPENV_GAME_API int OpenVGameAuthorityStopNative(void);
 OPENV_GAME_API int OpenVGameAuthorityNativeActive(void);
