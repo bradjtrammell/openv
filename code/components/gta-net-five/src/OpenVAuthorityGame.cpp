@@ -105,8 +105,8 @@ uint32_t spawns_this_frame = 0;
 openv_game_native_api native_owner_api{};
 openv_game_native_async_api native_owner_async_api{};
 // -2 idle, -1 rejected (owner must stop), 0 joining, 1 admitted.
-// Game-thread-only; no status or secret is shared with a launcher worker.
-int native_admission_state = -2;
+// Only game-thread code mutates admission; workers can observe atomically.
+std::atomic<int> native_admission_state{-2};
 // Async join must not remain pending forever if the bridge worker stalls.
 // The bridge I/O timeout is 10s; allow 20s for its admission lifecycle.
 constexpr auto NATIVE_ADMISSION_TIMEOUT = std::chrono::seconds(20);
@@ -150,6 +150,12 @@ std::unique_ptr<PendingNativeStart> pending_native_start;
 bool pending_native_dispatching = false;
 // This describes only launcher handoff, not authenticated admission.
 std::atomic<int> pending_native_status{-2};
+// Credential-free runtime evidence, never an admission/entitlement decision.
+std::atomic<uint64_t> native_main_frames{0};
+std::atomic<uint64_t> native_replica_frames{0};
+std::atomic<uint64_t> native_last_revision{0};
+std::atomic<uint64_t> native_last_local_id{0};
+std::atomic<uint64_t> native_last_live_entities{0};
 #ifdef _WIN32
 HMODULE native_bridge_module = nullptr;
 bool loading_native_bridge = false;
@@ -717,6 +723,21 @@ extern "C" int OpenVGameAuthorityQueuedStatus(void) {
     return pending_native_status.load(std::memory_order_acquire);
 }
 
+extern "C" int OpenVGameAuthorityNativeTelemetry(
+    openv_game_native_telemetry* out) {
+    if (!out || out->struct_size != sizeof(*out)) return 0;
+    // Independently sampled atomics: progress only, not a transactional ACK.
+    out->queued_status = pending_native_status.load(std::memory_order_acquire);
+    out->admission_status = native_admission_state.load(std::memory_order_acquire);
+    out->native_owned = native_session_owned.load(std::memory_order_acquire) ? 1u : 0u;
+    out->main_frames = native_main_frames.load(std::memory_order_relaxed);
+    out->replica_frames = native_replica_frames.load(std::memory_order_relaxed);
+    out->last_revision = native_last_revision.load(std::memory_order_relaxed);
+    out->local_entity_id = native_last_local_id.load(std::memory_order_relaxed);
+    out->live_entities = native_last_live_entities.load(std::memory_order_relaxed);
+    return 1;
+}
+
 extern "C" int OpenVGameAuthorityNativeActive(void) {
     return native_owner_session && native_admission_state == 1 &&
            activated && authorized() ? 1 : 0;
@@ -765,6 +786,10 @@ extern "C" int OpenVGameAuthorityStopNative(void) {
         native_owner_destroyed = true;
     }
     native_owner_session = nullptr;
+    native_replica_frames.store(0, std::memory_order_relaxed);
+    native_last_revision.store(0, std::memory_order_relaxed);
+    native_last_local_id.store(0, std::memory_order_relaxed);
+    native_last_live_entities.store(0, std::memory_order_relaxed);
     native_session_owned.store(false, std::memory_order_release);
     native_admission_started = {};
     native_owner_thread = std::thread::id{};
@@ -847,6 +872,10 @@ static int start_native_impl(
         return 0;
     }
     native_owner_thread = std::this_thread::get_id();
+    native_replica_frames.store(0, std::memory_order_relaxed);
+    native_last_revision.store(0, std::memory_order_relaxed);
+    native_last_local_id.store(0, std::memory_order_relaxed);
+    native_last_live_entities.store(0, std::memory_order_relaxed);
     native_session_owned.store(true, std::memory_order_release);
     auto fail = [&](const char* message) {
         // A failed authenticated join is single-use. Attempt orderly cleanup,
@@ -1133,6 +1162,7 @@ static InitFunction openvNativeGameFrame([] {
     OnMainGameFrame.Connect([] {
         observe_main_frame();
         if (!main_frame_ready_on_caller()) return;
+        native_main_frames.fetch_add(1, std::memory_order_relaxed);
         // The trusted launcher may enqueue from a worker, but only the real
         // GTA main frame may load the DLL and start authenticated admission.
         // Async start queues its network worker; no synchronous join here.
@@ -1193,6 +1223,15 @@ static InitFunction openvNativeGameFrame([] {
             // Never allow it to escape GTA's main game loop.
         }
         inside_game_frame = false;
+        if (native_owner_session && tick_result == 1 &&
+            (frame.status == OPENV_GAME_FRAME_ACTIVE ||
+             frame.status == OPENV_GAME_FRAME_RETRY)) {
+            native_last_revision.store(frame.revision, std::memory_order_relaxed);
+            native_last_local_id.store(frame.local_entity_id, std::memory_order_relaxed);
+            native_last_live_entities.store(
+                static_cast<uint64_t>(frame.live_entities), std::memory_order_relaxed);
+            native_replica_frames.fetch_add(1, std::memory_order_relaxed);
+        }
         if (native_owner_session &&
             (tick_result != 1 ||
              (frame.status != OPENV_GAME_FRAME_ACTIVE &&
