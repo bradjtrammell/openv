@@ -1,3 +1,21 @@
+## Queued admission waits for the real local GTA avatar (2026-10-26)
+
+The trusted launcher can queue an authenticated native handoff before GTA
+finishes streaming its local player ped. The real `OnMainGameFrame` now
+preflights the same local ped/vehicle position sampler used by native
+movement. A missing or temporarily unreadable avatar leaves the owned
+capability and model policy in the cancellable queue for at most 15 seconds,
+without loading the bridge DLL or creating a native authority session.
+Entitlement is checked on every attempt; revocation fails closed immediately.
+Once the avatar is readable, the request dispatches exactly once and the
+existing authenticated asynchronous bridge admission continues. An avatar
+that never becomes readable is rejected after the deadline. The queued status
+0 means **waiting for the avatar or dispatch**, never authenticated; status
+1 means dispatched but not necessarily admitted. Only
+`OpenVGameAuthorityNativeAdmissionStatus() == 1` indicates admission.
+GCC/MSVC adapter regressions cover waiting, cancellation, revocation,
+and successful retry. Genuine GTA V gameplay is still NOT RUN.
+
 ## Trusted in-process launcher handoff to GTA main frame (2026-10-26)
 
 The native GTA adapter now provides `OpenVGameAuthorityQueueNativeAsync`
