@@ -129,7 +129,9 @@ struct PendingNativeStart {
     bool from_dll = false;
     // A valid launch can arrive before GTA has streamed its local player ped.
     // Bound retries on the real main frame without consuming the bearer.
-    std::chrono::steady_clock::time_point queued_at = std::chrono::steady_clock::now();
+    // Start the deadline at the first *actual* GTA frame, not enqueue time:
+    // loading GTA and reaching OnMainGameFrame can take much longer.
+    std::chrono::steady_clock::time_point first_avatar_wait{};
     ~PendingNativeStart() {
         volatile char* bytes = capability.data();
         for (size_t i = 0; i < capability.size(); ++i) bytes[i] = 0;
@@ -1057,9 +1059,14 @@ static void dispatch_queued_native_start() {
     // the avatar streams; a second probe could consume a valid handoff.
     const bool avatar_ready = idle && entitled &&
                               sample_local_avatar(&local_avatar);
-    if (idle && entitled && !avatar_ready &&
-        std::chrono::steady_clock::now() - request->queued_at <
-            QUEUED_AVATAR_READY_TIMEOUT) {
+    if (idle && entitled && !avatar_ready) {
+        const auto now = std::chrono::steady_clock::now();
+        if (request->first_avatar_wait == std::chrono::steady_clock::time_point{})
+            request->first_avatar_wait = now;
+        defer_for_avatar = now - request->first_avatar_wait <
+                           QUEUED_AVATAR_READY_TIMEOUT;
+    }
+    if (defer_for_avatar) {
         defer_for_avatar = true;
     }
     if (defer_for_avatar) {
