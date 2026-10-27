@@ -1050,9 +1050,14 @@ static void dispatch_queued_native_start() {
     try {
         entitled = request->entitlement(request->entitlement_context) == 1;
     } catch (...) { entitled = false; }
+    const bool idle = !native_owner_session && !bound_session &&
+                      entities.empty();
     openv_authority_position local_avatar{};
-    if (!native_owner_session && !bound_session && entities.empty() && entitled &&
-        !sample_local_avatar(&local_avatar) &&
+    // Sample once per frame. GTA natives can change between calls while
+    // the avatar streams; a second probe could consume a valid handoff.
+    const bool avatar_ready = idle && entitled &&
+                              sample_local_avatar(&local_avatar);
+    if (idle && entitled && !avatar_ready &&
         std::chrono::steady_clock::now() - request->queued_at <
             QUEUED_AVATAR_READY_TIMEOUT) {
         defer_for_avatar = true;
@@ -1064,8 +1069,7 @@ static void dispatch_queued_native_start() {
         pending_native_dispatching = false;
         return;
     }
-    if (!native_owner_session && !bound_session && entities.empty() && entitled &&
-        sample_local_avatar(&local_avatar)) {
+    if (avatar_ready) {
         openv_game_native_launch launch{
             sizeof(openv_game_native_launch), request->bridge_port,
             request->capability.data(), request->entitlement,
