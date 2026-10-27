@@ -1,3 +1,32 @@
+## Native GTA frame telemetry for trusted host supervision (2026-10-26)
+
+The production `gta-net-five` component exports
+`OpenVGameAuthorityNativeTelemetry(openv_game_native_telemetry*)`.
+A trusted launcher worker can call it from **any thread** after setting
+`struct_size = sizeof(openv_game_native_telemetry)`. Unlike the game-thread-only
+admission and cleanup APIs, this call never invokes GTA natives, entitlement
+callbacks, network I/O or a bridge function, and it exposes no credential,
+ticket, DLL path or pointer.
+
+The fixed C ABI returns the queued handoff state (-2 idle, -1 rejected,
+0 waiting, 1 dispatched), the native authority state (-2 idle, -1 rejected,
+0 joining, 1 admitted), whether the private native session remains owned,
+the lifetime count of actual `OnMainGameFrame` callbacks, accepted native
+replica frame count, last server revision, local entity ID and live entity
+count. Session-specific counters reset on a new native session and on complete
+teardown. The main-frame count persists for the process lifetime. A malformed
+structure size or null output is rejected without writing output.
+
+**These independently sampled atomics are progress evidence, not a signed
+server acknowledgment or proof of game ownership.** A status of 1 must never
+replace the signed Identity admission, entitlement check, server-issued
+readiness proof, or live session revocation checks. Actual GTA V gameplay
+is still NOT RUN. The Windows private CI additionally runs the production
+GTA adapter against the *real compiled* `openv_world_bridge.dll`, proving
+that an unreachable local bridge is rejected without spawning a GTA entity
+and that native teardown unloads the DLL. That is a binary integration
+regression, not a running GTA game or OneSync wire implementation.
+
 ## Queued admission waits for the real local GTA avatar (2026-10-26)
 
 The trusted launcher can queue an authenticated native handoff before GTA
