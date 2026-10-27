@@ -722,6 +722,12 @@ extern "C" int OpenVGameAuthorityNativeAdmissionStatus(void) {
     return native_admission_state;
 }
 
+extern "C" int OpenVGameAuthorityNativeNeedsCleanup(void) {
+    if (!main_frame_ready_on_caller() || !native_owner_session) return 0;
+    return native_admission_state == -1 ||
+           (native_admission_state == 1 && !authorized()) ? 1 : 0;
+}
+
 extern "C" int OpenVGameAuthorityStopNative(void) {
     if (inside_game_frame || !native_owner_session ||
         native_owner_thread != std::this_thread::get_id())
@@ -1146,17 +1152,37 @@ static InitFunction openvNativeGameFrame([] {
         }
         if (!activated || !tick_callback ||
             (native_owner_session && native_admission_state != 1)) return;
+        // A launcher can revoke entitlement while the server worker is idle.
+        // Do not dispatch another replica frame or re-admit on a later tick.
+        // Native stop may wait for network I/O, so the host must perform it
+        // outside this render callback using NativeNeedsCleanup.
+        if (native_owner_session && !authorized()) {
+            native_admission_state = -1;
+            activated = false;
+            return;
+        }
         openv_authority_frame frame{};
         frame.struct_size = sizeof(frame);
         // The native authority tick only drains an authenticated worker
         // mailbox and dispatches engine callbacks; it performs no network I/O.
-        // Keep ticking after revocation so remote handles can be withdrawn.
         spawns_this_frame = 0;
         inside_game_frame = true;
-        try { (void)tick_callback(bound_session, &frame); }
+        int tick_result = 0;
+        try { tick_result = tick_callback(bound_session, &frame); }
         catch (...) {
-            // Never allow a C++ exception to escape the GTA game loop.
+            // An engine callback exception is a failed authority frame.
+            // Never allow it to escape GTA's main game loop.
         }
         inside_game_frame = false;
+        if (native_owner_session &&
+            (tick_result != 1 ||
+             (frame.status != OPENV_GAME_FRAME_ACTIVE &&
+              frame.status != OPENV_GAME_FRAME_RETRY))) {
+            // This is an irreversible session failure, not a transient
+            // missing-model retry. Keep native ownership and GTA handles
+            // for orderly stop/despawn; never process another entity frame.
+            native_admission_state = -1;
+            activated = false;
+        }
     });
 });

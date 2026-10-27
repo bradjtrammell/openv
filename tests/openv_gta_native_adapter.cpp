@@ -227,6 +227,9 @@ struct FakeAuthority {
     int async_polls = 0;
     bool fail_stop_once = false;
     bool fail_destroy_once = false;
+    uint32_t forced_frame_status = OPENV_GAME_FRAME_ACTIVE;
+    bool fail_tick = false;
+    bool throw_tick = false;
 } fake;
 uint32_t fake_abi() { return OPENV_AUTHORITY_ABI_VERSION; }
 void* fake_create(const openv_game_native_config* config,
@@ -285,6 +288,8 @@ int fake_tick(void* authority_session, openv_authority_frame* frame) {
     assert(authority_session == &fake);
     assert(frame->struct_size == sizeof(*frame));
     assert(OpenVGameAuthorityStopNative() == 0); // never block in OnGameFrame
+    if (fake.throw_tick) throw std::runtime_error("simulated native frame exception");
+    if (fake.fail_tick) return 0;
     if (fake.frames == 0) {
         auto p = player(400);
         assert(fake.callbacks.authorized(fake.context) == 1);
@@ -297,7 +302,7 @@ int fake_tick(void* authority_session, openv_authority_frame* frame) {
         assert(fake.callbacks.move(fake.context, fake.handle, &p) == 1);
     }
     ++fake.frames;
-    frame->status = 1;
+    frame->status = fake.forced_frame_status;
     frame->live_entities = 1;
     return 1;
 }
@@ -735,6 +740,70 @@ int main() {
     assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.stops == 7 && fake.destroys == 7);
+
+    // Actual authority frame statuses must control native admission. RETRY
+    // is a temporary transport condition; a later REVOKED frame permanently
+    // disables replication even when the launcher entitlement stays valid.
+    fake.frames = 0;
+    fake.forced_frame_status = OPENV_GAME_FRAME_RETRY;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    assert(OpenVGameAuthorityNativeNeedsCleanup() == 0);
+    fake.forced_frame_status = OPENV_GAME_FRAME_ACTIVE;
+    OnMainGameFrame.Fire();
+    assert(fake.frames == 2 && OpenVGameAuthorityNativeActive() == 1);
+    fake.forced_frame_status = OPENV_GAME_FRAME_REVOKED;
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+    assert(OpenVGameAuthorityNativeActive() == 0);
+    assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+    const int revoked_frames = fake.frames;
+    OnMainGameFrame.Fire();
+    assert(fake.frames == revoked_frames);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.handle == 0 && objects.size() == 1);
+    assert(OpenVGameAuthorityNativeNeedsCleanup() == 0);
+
+    // Invalid server statuses, failed callbacks and thrown native errors
+    // must not be interpreted as a healthy admitted gameplay frame.
+    for (int failure = 0; failure < 4; ++failure) {
+        fake.frames = 0;
+        fake.forced_frame_status = failure == 0 ?
+            OPENV_GAME_FRAME_WRONG_THREAD : failure == 1 ? 999u :
+            OPENV_GAME_FRAME_ACTIVE;
+        fake.fail_tick = failure == 2;
+        fake.throw_tick = failure == 3;
+        assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+        OnMainGameFrame.Fire();
+        assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
+        assert(OpenVGameAuthorityNativeActive() == 0);
+        assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+        const int failed_frames = fake.frames;
+        OnMainGameFrame.Fire();
+        assert(fake.frames == failed_frames);
+        assert(OpenVGameAuthorityStopNative() == 1);
+        assert(fake.handle == 0 && objects.size() == 1);
+        fake.fail_tick = false;
+        fake.throw_tick = false;
+    }
+    fake.forced_frame_status = OPENV_GAME_FRAME_ACTIVE;
+
+    // A revoked live entitlement must not run even one more engine tick.
+    // Restoring the callback alone must never resurrect the old session.
+    fake.frames = 0;
+    assert(OpenVGameAuthorityStartNative(&api, &launch, error, sizeof(error)) == 1);
+    OnMainGameFrame.Fire();
+    assert(fake.frames == 1);
+    allowed = false;
+    OnMainGameFrame.Fire();
+    assert(fake.frames == 1);
+    assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+    allowed = true;
+    OnMainGameFrame.Fire();
+    assert(fake.frames == 1 && OpenVGameAuthorityNativeActive() == 0);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(fake.handle == 0 && objects.size() == 1);
 
     // Async numeric admission must never call blocking join or spawn remote
     // proxies before the bridge has validated its authenticated ACK. Only
