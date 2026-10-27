@@ -1088,8 +1088,18 @@ int main(int argc, char** argv) {
     assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
     assert(OpenVGameAuthorityNativeActive() == 1);
     assert(created == async_created + 1);
-    assert(OpenVGameAuthorityStopNative() == 1);
+    // Revocation now automatically begins nonblocking authenticated leave
+    // on the next real GTA main frames. The mock delays one poll to prove
+    // that cleanup does not block rendering or expose a live entity.
+    allowed = false;
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+    OnMainGameFrame.Fire();
     assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    assert(GetModuleHandleW(L"openv-gta-native-mock.dll") == nullptr);
+    allowed = true;
     // Real Windows DLL handoff from a launcher worker: DLL loading and
     // GetProcAddress occur only after the GTA main frame consumes the queue.
     assert(OpenVGameAuthorityQueueNativeAsyncFromDll(
@@ -1144,18 +1154,20 @@ int main(int argc, char** argv) {
             real_bridge_path, &rejected_launch, error, sizeof(error)) == 1);
         assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
         assert(GetModuleHandleW(L"openv_world_bridge.dll") != nullptr);
-        // The genuine bridge may spend its full bounded I/O timeout waiting
-        // for an unreachable local endpoint. Keep driving GTA main frames
-        // through the 20-second admission watchdog; 5 seconds is insufficient.
-        for (int attempt = 0; attempt < 2500 &&
-             OpenVGameAuthorityNativeAdmissionStatus() == 0; ++attempt) {
+        // Real bridge network I/O may take the full bounded timeout. Drive
+        // both denied admission and the new nonblocking leave to completion;
+        // no explicit blocking StopNative is needed in a GTA frame.
+        bool saw_denial = false;
+        for (int attempt = 0; attempt < 4500; ++attempt) {
             OnMainGameFrame.Fire();
+            if (OpenVGameAuthorityNativeNeedsCleanup() == 1)
+                saw_denial = true;
+            if (saw_denial && OpenVGameAuthorityNativeAdmissionStatus() == -2)
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        assert(OpenVGameAuthorityNativeAdmissionStatus() == -1);
-        assert(OpenVGameAuthorityNativeNeedsCleanup() == 1);
+        assert(saw_denial);
         assert(created == created_before_rejection);
-        assert(OpenVGameAuthorityStopNative() == 1);
         assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
         assert(GetModuleHandleW(L"openv_world_bridge.dll") == nullptr);
     }

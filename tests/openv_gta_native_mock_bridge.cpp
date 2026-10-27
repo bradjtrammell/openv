@@ -24,6 +24,8 @@ struct MockSession {
     int admission_polls = 0;
     bool motion_configured = false;
     bool interest_configured = false;
+    bool stopping = false;
+    int stop_polls = 0;
 };
 
 extern "C" {
@@ -147,6 +149,19 @@ __declspec(dllexport) int openv_authority_stop(void* pointer) {
     session->started = false;
     session->joining = false;
     return 1;
+}
+__declspec(dllexport) int openv_authority_begin_stop(void* pointer) {
+    auto* session = static_cast<MockSession*>(pointer);
+    if (!session) return 0;
+    session->stopping = true;
+    session->stop_polls = 0;
+    return 1;
+}
+__declspec(dllexport) int openv_authority_poll_stop(void* pointer) {
+    auto* session = static_cast<MockSession*>(pointer);
+    if (!session || !session->stopping) return -1;
+    if (++session->stop_polls == 1) return 0;
+    return openv_authority_stop(pointer) == 1 ? 1 : -1;
 }
 __declspec(dllexport) int openv_authority_destroy(void* pointer) {
     auto* session = static_cast<MockSession*>(pointer);
