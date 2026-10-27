@@ -240,7 +240,11 @@ OPENV_GAME_API int OpenVGameAuthorityNativeNeedsCleanup(void);
  * QueuedStatus: -2 idle/cancelled, 0 queued/waiting for avatar, 1 dispatched
  * to the native async API (NOT admitted), -1 rejected or timed out. Query NativeAdmissionStatus for verified
  * server admission. Queue, cancel and queued-status are thread-safe.
- * Cancellation affects only requests not yet consumed by the game thread.
+ * Cancellation succeeds until native startup is committed, including while
+ * the game thread is probing entitlement and avatar readiness. Once native
+ * session construction begins, cancellation returns 0; use StopNative for
+ * orderly teardown after admission. A successful cancellation never starts
+ * a DLL or consumes the private capability.
  */
 OPENV_GAME_API int OpenVGameAuthorityQueueNativeAsync(
     const openv_game_native_api* api,

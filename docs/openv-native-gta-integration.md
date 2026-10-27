@@ -148,6 +148,23 @@ licensed two-player gameplay. The deterministic native adapter tests fire
 the main and watchdog events independently and attempt foreign-thread
 binding and startup. Actual GTA V launch remains NOT_RUN.
 
+## Concurrent launcher cancellation before native startup (2026-10-27)
+
+A trusted launcher worker may call `OpenVGameAuthorityCancelQueuedNative()`
+while the real GTA main frame is checking live entitlement or waiting for the
+local player ped. The game thread temporarily owns the private request during
+this check, but cancellation now remains effective until the exact moment
+native startup is committed. Both paths synchronize that transition: a
+successful cancellation securely discards the one-shot capability without
+loading the DLL, creating a session or joining the server; a cancellation
+arriving after startup is committed returns 0 and must use normal native
+teardown instead. This avoids false success while DLL loading is underway.
+
+Linux GCC and Windows MSVC native adapter regressions force both interleavings
+using actual launcher worker threads and gated entitlement/native-create
+callbacks. These are simulated Cfx frames; licensed GTA V launch, real OneSync
+entities and gameplay remain NOT RUN.
+
 # OpenV GTA V native authority adapter
 
 This is a **real Cfx/GTA V engine-native callback implementation**, compiled as part

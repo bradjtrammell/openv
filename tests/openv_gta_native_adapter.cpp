@@ -3,6 +3,7 @@
 #include <nutsnbolts.h>
 #include <ScriptEngine.h>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -71,6 +72,35 @@ bool burst_mode = false;
 std::array<uint64_t, 12> burst_handles{};
 
 int authorized(void*) { return allowed ? 1 : 0; }
+// Synchronize a real launcher worker against the main-frame handoff, rather
+// than relying on sleeps or a scheduler-dependent cancellation race.
+struct DispatchGate {
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+};
+void wait_for_dispatch_release(DispatchGate& gate) {
+    gate.entered.store(true, std::memory_order_release);
+    while (!gate.release.load(std::memory_order_acquire))
+        std::this_thread::yield();
+}
+int pausing_authorized(void* context) {
+    wait_for_dispatch_release(*static_cast<DispatchGate*>(context));
+    return 1;
+}
+int cancel_when_dispatch_enters(DispatchGate& gate) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(5);
+    while (!gate.entered.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            gate.release.store(true, std::memory_order_release);
+            return -1;
+        }
+        std::this_thread::yield();
+    }
+    const int cancelled = OpenVGameAuthorityCancelQueuedNative();
+    gate.release.store(true, std::memory_order_release);
+    return cancelled;
+}
 int tick(void* pointer, openv_authority_frame* frame) {
     assert(pointer == &session);
     assert(frame->struct_size == sizeof(*frame));
@@ -247,6 +277,14 @@ void* fake_create(const openv_game_native_config* config,
     fake.callbacks = *callbacks;
     fake.context = context;
     return &fake;
+}
+DispatchGate* create_dispatch_gate = nullptr;
+void* pausing_create(const openv_game_native_config* config,
+                     const openv_game_native_callbacks* callbacks,
+                     void* context) {
+    assert(create_dispatch_gate);
+    wait_for_dispatch_release(*create_dispatch_gate);
+    return fake_create(config, callbacks, context);
 }
 int fake_configure(void* authority_session,
                    int (*reader)(void*, openv_authority_position*),
@@ -990,6 +1028,60 @@ int main(int argc, char** argv) {
     assert(OpenVGameAuthorityCancelQueuedNative() == 0);
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.handle == 0 && objects.size() == 1);
+
+    // Cancellation must remain effective while the game thread is probing
+    // entitlement/avatar readiness. The queue pointer is temporarily moved
+    // out of the mutex during this probe; the worker must not receive a false
+    // "too late" result and must prevent any native session creation.
+    DispatchGate readiness_gate;
+    openv_game_native_launch slow_launch = launch;
+    slow_launch.entitlement = pausing_authorized;
+    slow_launch.entitlement_context = &readiness_gate;
+    const int starts_before_cancel_race = fake.starts;
+    const int destroys_before_cancel_race = fake.destroys;
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &api, &async_api, &slow_launch) == 1);
+    int cancelled_during_probe = -1;
+    std::thread cancel_probe([&] {
+        cancelled_during_probe = cancel_when_dispatch_enters(readiness_gate);
+    });
+    OnMainGameFrame.Fire();
+    cancel_probe.join();
+    assert(cancelled_during_probe == 1);
+    assert(OpenVGameAuthorityQueuedStatus() == -2);
+    assert(OpenVGameAuthorityCancelQueuedNative() == 0);
+    assert(fake.starts == starts_before_cancel_race);
+    assert(fake.destroys == destroys_before_cancel_race);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+
+    // The exact native-create commit boundary is different: cancellation
+    // must return 0 after the game thread commits startup, even when the
+    // private bridge constructor is still in progress. It must not falsely
+    // report that an already consumed bearer was cancelled.
+    DispatchGate committed_gate;
+    create_dispatch_gate = &committed_gate;
+    // The preceding session already advanced this deterministic fake's frame
+    // counter; a new session begins with an empty authoritative replica.
+    fake.frames = 0;
+    fake.handle = 0;
+    auto committed_api = api;
+    committed_api.create = pausing_create;
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &committed_api, &async_api, &launch) == 1);
+    int cancelled_after_commit = -1;
+    std::thread cancel_committed([&] {
+        cancelled_after_commit = cancel_when_dispatch_enters(committed_gate);
+    });
+    OnMainGameFrame.Fire();
+    cancel_committed.join();
+    create_dispatch_gate = nullptr;
+    assert(cancelled_after_commit == 0);
+    assert(OpenVGameAuthorityQueuedStatus() == 1);
+    assert(fake.starts == starts_before_cancel_race + 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(objects.size() == 1);
 
     // A first GTA main frame can arrive before the player's ped is streamed.
     // Keep the one-shot capability queued, without loading a bridge or
