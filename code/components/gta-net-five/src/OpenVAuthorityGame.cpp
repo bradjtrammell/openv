@@ -151,6 +151,11 @@ constexpr auto QUEUED_AVATAR_READY_TIMEOUT = std::chrono::seconds(15);
 std::mutex pending_native_mutex;
 std::unique_ptr<PendingNativeStart> pending_native_start;
 bool pending_native_dispatching = false;
+// The game thread temporarily owns the request while probing entitlement and
+// GTA avatar readiness. A launcher cancellation must still win until startup
+// is committed, without racing a DLL load or the native session constructor.
+bool pending_native_cancel_requested = false;
+bool pending_native_start_committed = false;
 // This describes only launcher handoff, not authenticated admission.
 std::atomic<int> pending_native_status{-2};
 // Credential-free runtime evidence, never an admission/entitlement decision.
@@ -696,6 +701,8 @@ static int queue_native_start(
         std::lock_guard<std::mutex> lock(pending_native_mutex);
         if (pending_native_start || pending_native_dispatching ||
             native_session_owned.load(std::memory_order_acquire)) return 0;
+        pending_native_cancel_requested = false;
+        pending_native_start_committed = false;
         pending_native_start = std::move(request);
         pending_native_status.store(0, std::memory_order_release);
         return 1;
@@ -716,7 +723,18 @@ extern "C" int OpenVGameAuthorityQueueNativeAsyncFromDll(
 
 extern "C" int OpenVGameAuthorityCancelQueuedNative(void) {
     std::lock_guard<std::mutex> lock(pending_native_mutex);
-    if (!pending_native_start || pending_native_dispatching) return 0;
+    if (pending_native_dispatching) {
+        // The game thread has removed the request from the queue to check
+        // entitlement/avatar readiness, but has not necessarily consumed it.
+        // Cancellation wins until the exact point where native startup is
+        // committed under this same lock. Never unload an in-flight DLL.
+        if (pending_native_start_committed || pending_native_cancel_requested)
+            return 0;
+        pending_native_cancel_requested = true;
+        pending_native_status.store(-2, std::memory_order_release);
+        return 1;
+    }
+    if (!pending_native_start) return 0;
     pending_native_start.reset();
     pending_native_status.store(-2, std::memory_order_release);
     return 1;
@@ -1134,15 +1152,26 @@ static void dispatch_queued_native_start() {
         defer_for_avatar = now - request->first_avatar_wait <
                            QUEUED_AVATAR_READY_TIMEOUT;
     }
-    if (defer_for_avatar) {
-        defer_for_avatar = true;
-    }
-    if (defer_for_avatar) {
+    {
         std::lock_guard<std::mutex> lock(pending_native_mutex);
-        pending_native_start = std::move(request);
-        pending_native_status.store(0, std::memory_order_release);
-        pending_native_dispatching = false;
-        return;
+        if (pending_native_cancel_requested) {
+            // The worker cancelled while the game thread was checking GTA
+            // readiness. Do not requeue, load a DLL, or consume the bearer.
+            request.reset();
+            pending_native_cancel_requested = false;
+            pending_native_dispatching = false;
+            pending_native_status.store(-2, std::memory_order_release);
+            return;
+        }
+        if (defer_for_avatar) {
+            pending_native_start = std::move(request);
+            pending_native_status.store(0, std::memory_order_release);
+            pending_native_dispatching = false;
+            return;
+        }
+        // From here cancellation must not claim success: the main game
+        // thread may enter native DLL loading immediately after unlock.
+        pending_native_start_committed = true;
     }
     if (avatar_ready) {
         openv_game_native_launch launch{
@@ -1171,6 +1200,8 @@ static void dispatch_queued_native_start() {
         std::lock_guard<std::mutex> lock(pending_native_mutex);
         pending_native_status.store(started == 1 ? 1 : -1,
                                     std::memory_order_release);
+        pending_native_start_committed = false;
+        pending_native_cancel_requested = false;
         pending_native_dispatching = false;
     }
 }
