@@ -466,3 +466,10 @@ Replaced the insecure UI prebuilt download with a source-only Windows build: loc
 - **Cross-repo:** private server PR #38 pins the merged public source in actual Windows native bridge CI; integration outcome recorded separately in the server repository.
 - **NOT_RUN:** licensed GTA V launch, actual OneSync network-owned entities, in-game resource execution and two-client gameplay. This change fixes authenticated frame safety but does not connect the trusted launcher to a running GTA V process.
 - **Next:** complete private integrated CI, wire the trusted signed-session launcher to the actual game host, supply lawful compatible Windows runtime DLLs, then execute licensed two-PC gameplay acceptance. No release, production deployment, spending, proprietary asset copy or entitlement bypass.
+
+### Verification completion — 2026-10-26 native authority frame revocation
+
+- Public PR #31 merged as `f39cf8e4ccf4008c44d091805d79a32471807324`; public GCC/MSVC native adapter run `40430031985` **PASS** (both OS jobs).
+- Private server PR #38 merged as `6e1129ef3387eaccb568c4df6e82a8f61836305b`, pinning the exact merged public source. Private Linux/Windows native integration run `40430209846` **PASS** (both OS jobs).
+- Public full PR validation `40430032022` **FAIL**: Linux server build returned GHCR builder image `manifest unknown`; RedM, FiveM and other jobs were cancelled on merge. Experimental full Windows client `40424561200` remains **FAIL** due to unresolved lawful runtime dependencies. Neither failure is concealed or claimed fixed.
+- Actual GTA V launch, OneSync-owned multiplayer entities, in-game resources and licensed two-PC play **NOT_RUN**. Next critical path remains authorized launcher/game lifecycle, runtime dependencies, real gameplay.
