@@ -868,6 +868,49 @@ int main() {
     assert(OpenVGameAuthorityStopNative() == 1);
     assert(fake.handle == 0 && objects.size() == 1);
 
+    // A first GTA main frame can arrive before the player's ped is streamed.
+    // Keep the one-shot capability queued, without loading a bridge or
+    // constructing a session, until an actual local avatar is readable.
+    // A waiting request remains cancellable from the launcher worker.
+    const auto local_ped = objects.at(10);
+    const int starts_before_avatar = fake.starts;
+    objects.erase(10);
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &api, &async_api, &launch) == 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == 0);
+    assert(fake.starts == starts_before_avatar);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == -2);
+    assert(OpenVGameAuthorityCancelQueuedNative() == 1);
+    assert(OpenVGameAuthorityQueuedStatus() == -2);
+    // A revoked entitlement during the avatar wait must reject, not retry.
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &api, &async_api, &launch) == 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == 0);
+    allowed = false;
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == -1);
+    assert(fake.starts == starts_before_avatar);
+    allowed = true;
+    // A later frame with a real ped must dispatch exactly once and complete
+    // authenticated async admission, without a second launcher handshake.
+    assert(OpenVGameAuthorityQueueNativeAsync(
+        &api, &async_api, &launch) == 1);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == 0);
+    objects[10] = local_ped;
+    fake.frames = 0;
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityQueuedStatus() == 1);
+    assert(fake.starts == starts_before_avatar + 1);
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 0);
+    OnMainGameFrame.Fire();
+    assert(OpenVGameAuthorityNativeAdmissionStatus() == 1);
+    assert(OpenVGameAuthorityNativeActive() == 1);
+    assert(OpenVGameAuthorityStopNative() == 1);
+    assert(objects.size() == 1);
+
     // Entitlement is checked again on the game thread, not trusted from
     // queue time. A revoked launch never constructs a native session.
     const int before_denied_handoff = fake.starts;
