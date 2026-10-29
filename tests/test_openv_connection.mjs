@@ -15,7 +15,7 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   const probes = [];
   let next = 0;
   const coordinator = create({ crypto,
-    schedule(fn, ms) { assert.ok(ms === WAIT_MS || ms === PROBE_MS); const id = ++next; timers.set(id, fn); return id; },
+    schedule(fn, ms) { assert.ok(ms === WAIT_MS || ms === PROBE_MS); const id = ++next; timers.set(id, () => { timers.delete(id); fn(); }); return id; },
     cancel(id) { timers.delete(id); },
     onChange(state) { changes.push({ ...state }); },
     probe(nonce) { probes.push(nonce); return true; },
