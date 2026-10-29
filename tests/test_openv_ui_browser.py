@@ -263,13 +263,38 @@ class BrowserUITests(unittest.TestCase):
         self.page.locator('#connect-form button[type=submit]').click()
         self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.assertIn('Waiting for server response', self.page.locator('#connection-state').inner_text())
-        self.page.evaluate("window.postMessage({type:'connecting'},'*')")
+        import json
+        nonce = json.loads(next(c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'))[1]
+        self.page.evaluate("(nonce) => window.postMessage({type:'connecting',nonce},'*')", nonce)
         self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('not yet verified')")
-        self.page.evaluate("window.postMessage({type:'connectFailed',message:'Rejected by server'},'*')")
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Rejected by server'},'*')", nonce)
         self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
         self.assertIn('connection failure', self.page.locator('#connection-state').inner_text())
         self.page.locator('#connect-form button[type=submit]').click()
         self.assertEqual(len([call for call in self.page.evaluate('window.__calls') if call[0] == 'connectTo']), 2)
+
+    def test_native_nonce_rejects_stale_and_untagged_events(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example.com:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        old = json.loads(next(c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'))[1]
+        self.page.evaluate("window.postMessage({type:'connectFailed',message:'Legacy untagged'},'*')")
+        self.page.evaluate("window.postMessage({type:'connectFailed',nonce:'0'.repeat(32),message:'Wrong request'},'*')")
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectAccepted',nonce},'*')", old)
+        self.assertIn('accepted the request', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvTransportConnected',nonce},'*')", old)
+        self.assertIn('not yet verified', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", old)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.locator('#connect-form button[type=submit]').click()
+        new = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.assertNotEqual(new, old)
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Stale'},'*')", old)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectRejected',nonce,reason:'busy'},'*')", new)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
 
     def test_query_favorites_and_native_messages(self):
         self.load()
@@ -303,10 +328,12 @@ class BrowserUITests(unittest.TestCase):
         self.page.evaluate("window.postMessage({type:'connectTo',hostnameStr:'example.org:30120'},'*')")
         self.page.wait_for_timeout(100)
         self.assertTrue(any(c[0] == 'connectTo' for c in self.page.evaluate('window.__calls')))
-        self.page.evaluate("window.postMessage({type:'connectStatus',data:{message:'Loading verified resources'}},'*')")
+        import json
+        nonce = json.loads(next(c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'))[1]
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectStatus',data:{nonce,message:'Loading verified resources'}},'*')", nonce)
         self.page.wait_for_timeout(100)
         self.assertIn('Loading verified resources', self.page.locator('#toast').inner_text())
-        self.page.evaluate("window.postMessage({type:'connectFailed',message:'Server unavailable'},'*')")
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Server unavailable'},'*')", nonce)
         self.page.wait_for_timeout(100)
         self.assertIn('Server unavailable', self.page.locator('#toast').inner_text())
 

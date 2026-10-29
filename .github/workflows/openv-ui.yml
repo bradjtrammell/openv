@@ -18,6 +18,9 @@ on:
       - 'ext/ui-build/loadscreen-fallback/**'
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_connection.mjs'
+      - 'tests/test_openv_connection_request.cpp'
+      - 'code/components/glue/src/ConnectToNative.cpp'
+      - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   pull_request:
@@ -37,12 +40,46 @@ on:
       - 'ext/ui-build/loadscreen-fallback/**'
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_connection.mjs'
+      - 'tests/test_openv_connection_request.cpp'
+      - 'code/components/glue/src/ConnectToNative.cpp'
+      - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  native-connection-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - name: Compile and run actual C++17 connection contract on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_connection_request.cpp -o /tmp/openv-connection-test
+          /tmp/openv-connection-test
+      - name: Compile and run actual C++17 connection contract with MSVC
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
+          if (-not $installation) { throw 'Visual Studio not found' }
+          $vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw 'MSVC environment not found' }
+          $command = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_connection_request.cpp /Fe:openv-connection-test.exe && openv-connection-test.exe'
+          & cmd.exe /d /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Native connection contract failed' }
   source-ui:
     strategy:
       fail-fast: false

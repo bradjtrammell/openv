@@ -32,6 +32,10 @@
     const messages = {
       idle: 'No active connection request.',
       requested: `Native connection requested for ${address}. Waiting for server response.`,
+      accepted: `Native client accepted the request for ${address}. Waiting for transport.`,
+      transport: `Transport reached ${address}. Game ownership, admission and gameplay are not yet verified.`,
+      rejected: 'The native client rejected the request. You may retry after the active connection ends.',
+      closed: 'The native network connection ended. You may retry.',
       connecting: `Connecting to ${address}. Game ownership and multiplayer are not yet verified.`,
       failed: 'The native client reported a connection failure. You may retry.',
       timeout: 'No final native response received. The previous request may still be running.',
@@ -290,21 +294,32 @@
         break;
       case 'queryingFailed':
         toast('The server did not respond to the query. Check its address and availability.'); break;
+      case 'openvConnectAccepted':
+        connection.accepted(message.nonce);
+        break;
+      case 'openvConnectRejected':
+        if (connection.rejected(message.nonce)) toast('The native client rejected this connection request.');
+        break;
+      case 'openvTransportConnected':
+        if (connection.transport(message.nonce)) toast('Server transport connected. Waiting for game admission.');
+        break;
+      case 'openvConnectClosed':
+        if (connection.closed(message.nonce)) toast('The native connection ended.');
+        break;
       case 'connectStatus':
-        connection.progress();
-        if (message.data && typeof message.data.message === 'string') toast(message.data.message);
+        if (connection.progress(message.data?.nonce) &&
+            typeof message.data?.message === 'string') toast(message.data.message);
         break;
       case 'connectFailed':
-        connection.failed();
-        if (typeof message.message === 'string') toast(`Connection failed: ${message.message}`);
+        if (connection.failed(message.nonce) && typeof message.message === 'string')
+          toast(`Connection failed: ${message.message}`);
         break;
       case 'connecting':
-        connection.progress();
-        toast('Connecting to server…');
+        if (connection.progress(message.nonce)) toast('Connecting to server…');
         break;
       case 'connectionStatus':
-        connection.progress();
-        if (typeof message.message === 'string') toast(message.message);
+        if (connection.progress(message.nonce) && typeof message.message === 'string')
+          toast(message.message);
         break;
       default: break;
     }

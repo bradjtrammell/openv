@@ -28,10 +28,13 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.deepEqual(calls, [['play.example:30120', 'ab'.repeat(16)]]);
   assert.equal(c.active(), true);
   assert.equal(c.start('other.example:30120', () => { throw Error('duplicate dispatched'); }).reason, 'busy');
-  c.progress();
+  assert.equal(c.accepted('ab'.repeat(16)), true);
+  assert.equal(c.progress('ab'.repeat(16)), true);
   assert.equal(changes.at(-1).phase, 'connecting');
+  assert.equal(c.progress(undefined), false);
+  assert.equal(c.failed(undefined), false);
   const stale = timers.values().next().value;
-  assert.equal(c.failed(), true);
+  assert.equal(c.failed('ab'.repeat(16)), true);
   assert.equal(c.active(), false);
   assert.equal(timers.size, 0);
   assert.equal(changes.at(-1).phase, 'failed');
@@ -41,7 +44,44 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   timers.values().next().value();
   assert.equal(c.active(), false);
   assert.equal(changes.at(-1).phase, 'timeout');
-  assert.equal(c.failed(), false);
+  assert.equal(c.failed('ab'.repeat(16)), false);
+}
+{
+  let counter = 0;
+  const { coordinator: c, timers, changes } = fixture({ getRandomValues(bytes) { bytes.fill(++counter); return bytes; } });
+  assert.equal(c.start('a:1', () => true).ok, true);
+  const old = '01'.repeat(16);
+  const staleTimer = timers.values().next().value;
+  assert.equal(c.rejected('ff'.repeat(16)), false);
+  assert.equal(c.rejected(old), true);
+  assert.equal(changes.at(-1).phase, 'rejected');
+  assert.equal(c.start('b:2', () => true).ok, true);
+  assert.equal(c.failed(old), false);
+  assert.equal(c.closed(old), false);
+  assert.equal(c.accepted(old), false);
+  assert.equal(c.progress(old), false);
+  staleTimer();
+  assert.equal(c.active(), true);
+  assert.equal(c.accepted('02'.repeat(16)), true);
+  assert.equal(c.transport('02'.repeat(16)), true);
+  assert.equal(changes.at(-1).phase, 'transport');
+  assert.equal(c.progress('02'.repeat(16)), true);
+  assert.equal(changes.at(-1).phase, 'transport');
+  assert.equal(c.closed('02'.repeat(16)), true);
+  assert.equal(changes.at(-1).phase, 'closed');
+  assert.equal(c.start('c:3', () => true).ok, true);
+  timers.values().next().value();
+  assert.equal(c.active(), false);
+  assert.equal(changes.at(-1).phase, 'timeout');
+}
+{
+  const { coordinator: c, changes } = fixture();
+  assert.equal(c.start('a:1', (_, nonce) => {
+    assert.equal(c.rejected(nonce), true);
+    return true;
+  }).reason, 'native');
+  assert.equal(c.active(), false);
+  assert.equal(changes.at(-1).phase, 'rejected');
 }
 {
   const { coordinator: c, timers, changes } = fixture();

@@ -40,7 +40,7 @@
       const token = nonce();
       if (!token) return { ok: false, reason: 'crypto' };
       const id = ++sequence;
-      pending = { id, address, timer: null };
+      pending = { id, address, token, phase: 'requested', timer: null };
       try {
         const timer = schedule(() => {
           if (pending && pending.id === id) release('timeout');
@@ -57,14 +57,45 @@
         release('dispatch_failed');
         return { ok: false, reason: 'dispatch' };
       }
-      publish('requested', address);
+      // Native callbacks can execute synchronously during invokeNative.
+      if (!pending || pending.id !== id) return { ok: false, reason: 'native' };
+      if (pending.phase === 'requested') publish('requested', address);
       return { ok: true };
+    }
+    function matching(token) {
+      return pending !== null && typeof token === 'string' && token === pending.token;
+    }
+    function accepted(token) {
+      if (!matching(token)) return false;
+      if (pending.phase === 'requested') {
+        pending.phase = 'accepted';
+        publish('accepted', pending.address);
+      }
+      return true;
+    }
+    function progress(token) {
+      if (!matching(token)) return false;
+      if (pending.phase !== 'transport') {
+        pending.phase = 'connecting';
+        publish('connecting', pending.address);
+      }
+      return true;
+    }
+    function transport(token) {
+      if (!matching(token)) return false;
+      pending.phase = 'transport';
+      publish('transport', pending.address);
+      return true;
     }
     return Object.freeze({
       start,
       active: () => pending !== null,
-      progress: () => { if (pending) publish('connecting', pending.address); },
-      failed: () => release('failed'),
+      accepted,
+      progress,
+      transport,
+      failed: token => matching(token) && release('failed'),
+      rejected: token => matching(token) && release('rejected'),
+      closed: token => matching(token) && release('closed'),
       // A native UI frame may be destroyed while a request is pending.
       dispose: () => release('disposed'),
     });
