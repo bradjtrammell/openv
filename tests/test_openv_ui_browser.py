@@ -42,6 +42,7 @@ class BrowserUITests(unittest.TestCase):
     def load(self, native=True):
         if native:
             self.page.evaluate("window.__calls=[]; window.invokeNative=(action,arg)=>window.__calls.push([action,arg])")
+        self.page.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
         self.page.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
 
     def test_first_party_root_native_lifecycle_and_authenticated_dispatch(self):
@@ -81,6 +82,7 @@ class BrowserUITests(unittest.TestCase):
           window.__calls = [];
           window.invokeNative = (action, argument) => window.__calls.push([action, argument]);
         }''')
+        child.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
         child.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
         self.page.evaluate('''() => window.__push('frameCall', 'mpMenu', JSON.stringify({
           type: 'serverQueried', addr: 'root.example:30120', name: 'First-party root'
@@ -255,6 +257,20 @@ class BrowserUITests(unittest.TestCase):
         self.assertEqual(len(json.loads(connect[0][1])[1]), 32)
         self.assertIn('play.example.com:30120', self.page.locator('#recent-list').inner_text())
 
+    def test_native_connection_pending_gate_failure_and_retry(self):
+        self.load()
+        self.page.locator('#server-address').fill('play.example.com:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertIn('Waiting for server response', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("window.postMessage({type:'connecting'},'*')")
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('not yet verified')")
+        self.page.evaluate("window.postMessage({type:'connectFailed',message:'Rejected by server'},'*')")
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
+        self.assertIn('connection failure', self.page.locator('#connection-state').inner_text())
+        self.page.locator('#connect-form button[type=submit]').click()
+        self.assertEqual(len([call for call in self.page.evaluate('window.__calls') if call[0] == 'connectTo']), 2)
+
     def test_query_favorites_and_native_messages(self):
         self.load()
         self.page.locator('.nav-link[data-view=servers]').click()
@@ -349,6 +365,7 @@ class BrowserUITests(unittest.TestCase):
         child.wait_for_selector('#server-list', timeout=8000, state='attached')
         child.evaluate('''() => { window.__calls = []; window.invokeNative = (action, argument) => window.__calls.push([action, argument]); }''')
         child.add_style_tag(content=(APP / 'styles.css').read_text(encoding='utf-8'))
+        child.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
         child.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
         self.page.evaluate('''() => window.__rootPush('frameCall', 'mpMenu', JSON.stringify({
             type: 'serverQueried', addr: '127.0.0.1:30120', name: 'Trusted frame server', clients: 2, maxclients: 16
