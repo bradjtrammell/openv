@@ -1092,8 +1092,12 @@ static InitFunction initFunction([] ()
 				const auto nonce = request[0].get<std::string>();
 				const auto code = request[1].get<std::string>();
 				std::string cardToken;
-				if (!g_connected || !netLibrary || nonce != g_openvUIRequestNonce ||
-					!g_openvAdmissionCard.Take(nonce, code, cardToken)) return;
+				if (!g_connected || !netLibrary || nonce != g_openvUIRequestNonce) return;
+				if (!g_openvAdmissionCard.Take(nonce, code, cardToken))
+				{
+					PostOpenVConnectionEvent("openvAdmissionRejected", nonce, "expired_or_invalid");
+					return;
+				}
 				const auto response = nlohmann::json::object({ { "join_code", code } });
 				netLibrary->SubmitCardResponse(response.dump(), cardToken);
 				PostOpenVConnectionEvent("openvAdmissionCodeSubmitted", nonce);
