@@ -352,6 +352,7 @@ class BrowserUITests(unittest.TestCase):
         self.assertEqual(self.page.locator('#admission-code').input_value(), '')
         self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.page.wait_for_function("() => !document.querySelector('#connect-form button[type=submit]').disabled")
         self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
         self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
@@ -381,6 +382,7 @@ class BrowserUITests(unittest.TestCase):
         self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
         self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.page.wait_for_function("() => !document.querySelector('#connect-form button[type=submit]').disabled")
         self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
 
     def test_native_rejected_admission_cancels_matching_connection(self):
