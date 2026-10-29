@@ -14,7 +14,13 @@
   let confirmExit = true;
   let toastTimer;
   const connection = window.OpenVConnectionCoordinator.create({
-    crypto: window.crypto,
+    // Resolve the CEF crypto provider at request time. If secure randomness
+    // disappears after page initialization, fail closed before native dispatch.
+    crypto: { getRandomValues: bytes => {
+      const provider = window.crypto;
+      if (!provider || typeof provider.getRandomValues !== 'function') throw new Error('crypto unavailable');
+      return provider.getRandomValues(bytes);
+    } },
     schedule: (callback, ms) => window.setTimeout(callback, ms),
     cancel: timer => window.clearTimeout(timer),
     onChange: updateConnectionState,
