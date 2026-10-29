@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   const MAX_CARD_BYTES = 4096;
+  const SUBMISSION_MS = 60000;
   const CODE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
   const NONCE_PATTERN = /^[0-9a-f]{32}$/;
   function supported(card) {
@@ -21,37 +22,67 @@
         action && action.type === 'Action.Submit';
     } catch (_) { return false; }
   }
-  function create({ show, hide, dispatch }) {
-    if (![show, hide, dispatch].every(fn => typeof fn === 'function'))
+  function create({ show, hide, dispatch, schedule, cancel, now, onExpire }) {
+    if (![show, hide, dispatch, schedule, cancel, now, onExpire].every(fn => typeof fn === 'function'))
       throw new TypeError('Invalid OpenV admission coordinator');
     let pending = null;
     function dismiss() {
       if (!pending) return false;
+      const previous = pending;
       pending = null;
+      if (previous.timer !== null) {
+        try { cancel(previous.timer); } catch (_) { /* disposed */ }
+      }
       hide();
+      return true;
+    }
+    function expire(request) {
+      if (pending !== request) return false;
+      dismiss();
+      try { onExpire(request.nonce); } catch (_) { /* native closure unconfirmed */ }
       return true;
     }
     function present(nonce, card) {
       if (pending || typeof nonce !== 'string' || !NONCE_PATTERN.test(nonce) ||
           !supported(card)) return false;
-      pending = nonce;
-      try { show(); } catch (_) { pending = null; return false; }
+      let started;
+      try { started = now(); } catch (_) { return false; }
+      if (!Number.isFinite(started) || started < 0 ||
+          !Number.isFinite(started + SUBMISSION_MS)) return false;
+      const request = { nonce, started, timer: null };
+      pending = request;
+      try {
+        const timer = schedule(() => expire(request), SUBMISSION_MS);
+        if (timer === false || timer == null) throw new Error('timer unavailable');
+        request.timer = timer;
+        show();
+      } catch (_) { dismiss(); return false; }
       return true;
     }
     function submit(code) {
       if (!pending) return { ok: false, reason: 'inactive' };
+      let current;
+      try { current = now(); } catch (_) { current = NaN; }
+      if (!Number.isFinite(current) || current < pending.started) {
+        expire(pending);
+        return { ok: false, reason: 'clock' };
+      }
+      if (current - pending.started >= SUBMISSION_MS) {
+        expire(pending);
+        return { ok: false, reason: 'expired' };
+      }
       const normalized = typeof code === 'string' ? code.trim() : '';
       if (!CODE_PATTERN.test(normalized)) return { ok: false, reason: 'invalid' };
       let sent = false;
-      try { sent = dispatch(pending, normalized) === true; } catch (_) { /* native unavailable */ }
+      try { sent = dispatch(pending.nonce, normalized) === true; } catch (_) { /* native unavailable */ }
       if (!sent) return { ok: false, reason: 'dispatch' };
       dismiss();
       return { ok: true };
     }
     return Object.freeze({
       present, submit, dismiss, active: () => pending !== null,
-      owns: nonce => pending !== null && pending === nonce,
+      owns: nonce => pending !== null && pending.nonce === nonce,
     });
   }
-  window.OpenVAdmission = Object.freeze({ create, supported, MAX_CARD_BYTES });
+  window.OpenVAdmission = Object.freeze({ create, supported, MAX_CARD_BYTES, SUBMISSION_MS });
 })();
