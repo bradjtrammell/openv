@@ -272,7 +272,7 @@ class BrowserUITests(unittest.TestCase):
             ('active', 'gameplay admission'),
         ]:
             self.page.evaluate("(a) => window.postMessage({type:'openvNativeStage',nonce:a[0],stage:a[1]},'*')", [nonce, stage])
-            self.page.wait_for_function("(text) => document.querySelector('#connection-state').textContent.includes(text)", expected)
+            self.page.wait_for_function("(text) => document.querySelector('#connection-state').textContent.includes(text)", arg=expected)
             self.assertIn(expected, self.page.locator('#connection-state').inner_text())
             self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.page.evaluate("(n) => window.postMessage({type:'openvNativeStage',nonce:n,stage:'__proto__'},'*')", nonce)
