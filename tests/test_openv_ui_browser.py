@@ -296,6 +296,39 @@ class BrowserUITests(unittest.TestCase):
         self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectRejected',nonce,reason:'busy'},'*')", new)
         self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
 
+    def test_native_disconnect_requires_confirmation_and_matching_ack(self):
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        import json
+        token = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.assertTrue(self.page.locator('#connection-cancel').is_visible())
+        self.page.locator('#connection-cancel').click()
+        self.page.locator('#connection-disconnect-dialog button[value=cancel]').click()
+        self.assertFalse(any(c[0] == 'openvCancelConnect' for c in self.page.evaluate('window.__calls')))
+        self.page.locator('#connection-cancel').click()
+        self.page.locator('#connection-disconnect-dialog button[value=disconnect]').click()
+        self.assertIn(['openvCancelConnect', token], self.page.evaluate('window.__calls'))
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", '0' * 32)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", token)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertTrue(self.page.locator('#connection-cancel').is_hidden())
+
+    def test_native_probe_does_not_grant_gameplay(self):
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        import json
+        token = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'active'},'*')", token)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvTransportConnected',nonce},'*')", token)
+        self.assertIn('not yet verified', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'absent'},'*')", token)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+
     def test_query_favorites_and_native_messages(self):
         self.load()
         self.page.locator('.nav-link[data-view=servers]').click()

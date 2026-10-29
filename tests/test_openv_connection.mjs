@@ -5,19 +5,22 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../ext/ui-build/data/app/connection.js', import.meta.url), 'utf8');
 const sandbox = { window: {}, Uint8Array, Array, Object, TypeError, Error };
 vm.runInNewContext(source, sandbox, { filename: 'connection.js' });
-const { create, WAIT_MS } = sandbox.window.OpenVConnectionCoordinator;
+const { create, WAIT_MS, PROBE_MS } = sandbox.window.OpenVConnectionCoordinator;
+assert.equal(PROBE_MS, 5000);
 assert.equal(WAIT_MS, 90000);
 
 function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return bytes; } }) {
   const timers = new Map();
   const changes = [];
+  const probes = [];
   let next = 0;
   const coordinator = create({ crypto,
-    schedule(fn, ms) { assert.equal(ms, WAIT_MS); const id = ++next; timers.set(id, fn); return id; },
+    schedule(fn, ms) { assert.ok(ms === WAIT_MS || ms === PROBE_MS); const id = ++next; timers.set(id, fn); return id; },
     cancel(id) { timers.delete(id); },
     onChange(state) { changes.push({ ...state }); },
+    probe(nonce) { probes.push(nonce); return true; },
   });
-  return { coordinator, timers, changes };
+  return { coordinator, timers, changes, probes };
 }
 {
   const { coordinator: c, timers, changes } = fixture();
@@ -42,8 +45,10 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   stale(); // stale timer from prior native attempt must not unlock the replacement
   assert.equal(c.active(), true);
   timers.values().next().value();
+  assert.equal(c.active(), true);
+  assert.equal(changes.at(-1).phase, 'checking');
+  assert.equal(c.probed('ab'.repeat(16), 'absent'), true);
   assert.equal(c.active(), false);
-  assert.equal(changes.at(-1).phase, 'timeout');
   assert.equal(c.failed('ab'.repeat(16)), false);
 }
 {
@@ -70,9 +75,10 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.closed('02'.repeat(16)), true);
   assert.equal(changes.at(-1).phase, 'closed');
   assert.equal(c.start('c:3', () => true).ok, true);
-  timers.values().next().value();
+  assert.equal(timers.size, 0);
+  assert.equal(c.active(), true);
+  assert.equal(c.probed('02'.repeat(16), 'absent'), true);
   assert.equal(c.active(), false);
-  assert.equal(changes.at(-1).phase, 'timeout');
 }
 {
   const { coordinator: c, changes } = fixture();
@@ -102,13 +108,48 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
 }
 {
   const c = create({ crypto: { getRandomValues: b => b },
-    schedule() { throw Error('no timers'); }, cancel() {}, onChange() {} });
+    schedule() { throw Error('no timers'); }, cancel() {}, onChange() {}, probe() { return true; } });
   assert.equal(c.start('a:1', () => true).reason, 'timer');
   assert.equal(c.active(), false);
 }
 {
   const c = create({ crypto: { getRandomValues: b => new Uint8Array(b.length) },
-    schedule() { return 1; }, cancel() {}, onChange() {} });
+    schedule() { return 1; }, cancel() {}, onChange() {}, probe() { return true; } });
   assert.equal(c.start('a:1', () => true).reason, 'crypto');
+}
+{
+  const { coordinator: c, timers, changes, probes } = fixture();
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('game.example:30120', () => true).ok, true);
+  timers.values().next().value();
+  assert.deepEqual(probes, [token]);
+  assert.equal(changes.at(-1).phase, 'checking');
+  assert.equal(c.probed(token, 'invalid'), false);
+  assert.equal(c.probed('ff'.repeat(16), 'absent'), false);
+  assert.equal(c.probed(token, 'active'), true);
+  assert.equal(changes.at(-1).phase, 'native_active');
+  assert.equal(timers.size, 0);
+  assert.equal(c.requestCancel(() => false), false);
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.requestCancel(nonce => nonce === token), true);
+  assert.equal(changes.at(-1).phase, 'cancel_requested');
+  assert.equal(c.requestCancel(() => true), false);
+  timers.values().next().value();
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.active(), true);
+  assert.equal(c.closed('ff'.repeat(16)), false);
+  assert.equal(c.closed(token), true);
+  assert.equal(c.active(), false);
+}
+{
+  const { coordinator: c, timers, changes } = fixture();
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('game.example:30120', () => true).ok, true);
+  timers.values().next().value();
+  timers.values().next().value();
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.active(), true);
+  assert.equal(c.probed(token, 'other'), true);
+  assert.equal(c.active(), false);
 }
 console.log('PASS: native connection coordination, nonce, duplicate fencing, timeout, stale callbacks and failure recovery');

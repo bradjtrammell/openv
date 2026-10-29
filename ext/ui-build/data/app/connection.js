@@ -1,105 +1,137 @@
-/* OpenV first-party native connection request coordinator.
- * UI-only state: it never authenticates, grants gameplay or declares success.
- * Native connectTo remains the sole owner of entitlement and session setup.
- */
+/* OpenV native transport state is authoritative. UI timeouts cannot unlock a live connection. */
 (() => {
   'use strict';
   const WAIT_MS = 90000;
-
-  function create({ crypto, schedule, cancel, onChange }) {
-    if (typeof schedule !== 'function' || typeof cancel !== 'function' ||
-        typeof onChange !== 'function') throw new TypeError('Invalid connection coordinator');
+  const PROBE_MS = 5000;
+  function create({ crypto, schedule, cancel, onChange, probe }) {
+    if (![schedule, cancel, onChange, probe].every(fn => typeof fn === 'function'))
+      throw new TypeError('Invalid connection coordinator');
     let pending = null;
     let sequence = 0;
-
     function publish(phase, address = '') {
       onChange(Object.freeze({ phase, address, pending: pending !== null }));
+    }
+    function clear(request) {
+      if (request.timer !== null) {
+        try { cancel(request.timer); } catch (_) { /* disposed */ }
+        request.timer = null;
+      }
     }
     function release(phase) {
       if (!pending) return false;
       const old = pending;
       pending = null;
-      try { cancel(old.timer); } catch (_) { /* timer already fired or destroyed */ }
+      clear(old);
       publish(phase, old.address);
       return true;
+    }
+    function arm(request, ms, callback) {
+      clear(request);
+      try {
+        const timer = schedule(() => {
+          if (pending !== request) return;
+          request.timer = null;
+          callback();
+        }, ms);
+        if (timer === false || timer == null) throw Error('timer unavailable');
+        request.timer = timer;
+        return true;
+      } catch (_) { return false; }
+    }
+    function unconfirmed(request) {
+      if (pending !== request) return;
+      request.phase = 'unconfirmed';
+      publish('unconfirmed', request.address);
+    }
+    function checkNative(request) {
+      if (pending !== request || request.phase === 'transport') return;
+      request.phase = 'checking';
+      publish('checking', request.address);
+      if (!arm(request, PROBE_MS, () => unconfirmed(request))) {
+        unconfirmed(request);
+        return;
+      }
+      try { if (probe(request.token) !== true) { clear(request); unconfirmed(request); } }
+      catch (_) { clear(request); unconfirmed(request); }
     }
     function nonce() {
       if (!crypto || typeof crypto.getRandomValues !== 'function') return null;
       try {
         const bytes = new Uint8Array(16);
-        const filled = crypto.getRandomValues(bytes);
-        if (filled !== bytes) return null;
-        return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+        if (crypto.getRandomValues(bytes) !== bytes) return null;
+        return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
       } catch (_) { return null; }
     }
     function start(address, dispatch) {
       if (pending) return { ok: false, reason: 'busy' };
-      if (typeof address !== 'string' || !address || typeof dispatch !== 'function') {
+      if (typeof address !== 'string' || !address || typeof dispatch !== 'function')
         return { ok: false, reason: 'invalid' };
-      }
       const token = nonce();
       if (!token) return { ok: false, reason: 'crypto' };
-      const id = ++sequence;
-      pending = { id, address, token, phase: 'requested', timer: null };
-      try {
-        const timer = schedule(() => {
-          if (pending && pending.id === id) release('timeout');
-        }, WAIT_MS);
-        if (timer === false || timer == null) throw new Error('timer unavailable');
-        pending.timer = timer;
-      } catch (_) {
+      const request = { id: ++sequence, address, token, phase: 'requested', timer: null };
+      pending = request;
+      if (!arm(request, WAIT_MS, () => checkNative(request))) {
         pending = null;
         return { ok: false, reason: 'timer' };
       }
-      let dispatched = false;
-      try { dispatched = dispatch(address, token) === true; } catch (_) { /* native bridge failure */ }
-      if (!dispatched) {
-        release('dispatch_failed');
-        return { ok: false, reason: 'dispatch' };
-      }
-      // Native callbacks can execute synchronously during invokeNative.
-      if (!pending || pending.id !== id) return { ok: false, reason: 'native' };
-      if (pending.phase === 'requested') publish('requested', address);
+      let sent = false;
+      try { sent = dispatch(address, token) === true; } catch (_) { /* bridge failed */ }
+      if (!sent) { release('dispatch_failed'); return { ok: false, reason: 'dispatch' }; }
+      if (pending !== request) return { ok: false, reason: 'native' };
+      if (request.phase === 'requested') publish('requested', address);
       return { ok: true };
     }
     function matching(token) {
-      return pending !== null && typeof token === 'string' && token === pending.token;
+      return pending !== null && typeof token === 'string' && pending.token === token;
     }
-    function accepted(token) {
+    function progress(phase, token) {
       if (!matching(token)) return false;
-      if (pending.phase === 'requested') {
-        pending.phase = 'accepted';
-        publish('accepted', pending.address);
-      }
-      return true;
-    }
-    function progress(token) {
-      if (!matching(token)) return false;
-      if (pending.phase !== 'transport') {
-        pending.phase = 'connecting';
-        publish('connecting', pending.address);
-      }
+      if (pending.phase === 'transport' || pending.phase === 'cancel_requested') return true;
+      pending.phase = phase;
+      publish(phase, pending.address);
+      const request = pending;
+      if (!arm(request, WAIT_MS, () => checkNative(request))) unconfirmed(request);
       return true;
     }
     function transport(token) {
       if (!matching(token)) return false;
+      clear(pending);
       pending.phase = 'transport';
       publish('transport', pending.address);
       return true;
     }
+    function probed(token, state) {
+      if (!matching(token) || !['active', 'absent', 'other'].includes(state)) return false;
+      if (state !== 'active') return release('closed');
+      if (pending.phase === 'checking' || pending.phase === 'unconfirmed') {
+        clear(pending);
+        pending.phase = 'native_active';
+        publish('native_active', pending.address);
+      }
+      return true;
+    }
+    function requestCancel(dispatch) {
+      if (!pending || typeof dispatch !== 'function' || pending.phase === 'cancel_requested') return false;
+      const request = pending;
+      let sent = false;
+      try { sent = dispatch(request.token) === true; } catch (_) { /* bridge failed */ }
+      if (pending !== request) return sent;
+      if (!sent) { unconfirmed(request); return false; }
+      request.phase = 'cancel_requested';
+      publish('cancel_requested', request.address);
+      if (!arm(request, PROBE_MS, () => unconfirmed(request))) unconfirmed(request);
+      return true;
+    }
     return Object.freeze({
-      start,
-      active: () => pending !== null,
-      accepted,
-      progress,
-      transport,
+      start, active: () => pending !== null,
+      accepted: token => progress('accepted', token),
+      progress: token => progress('connecting', token),
+      transport, probed, requestCancel,
       failed: token => matching(token) && release('failed'),
       rejected: token => matching(token) && release('rejected'),
       closed: token => matching(token) && release('closed'),
-      // A native UI frame may be destroyed while a request is pending.
       dispose: () => release('disposed'),
     });
   }
-
-  window.OpenVConnectionCoordinator = Object.freeze({ create, WAIT_MS });
+  window.OpenVConnectionCoordinator = Object.freeze({ create, WAIT_MS, PROBE_MS });
 })();

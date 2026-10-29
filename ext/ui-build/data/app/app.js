@@ -23,6 +23,7 @@
     } },
     schedule: (callback, ms) => window.setTimeout(callback, ms),
     cancel: timer => window.clearTimeout(timer),
+    probe: nonce => invoke('openvConnectionProbe', nonce),
     onChange: updateConnectionState,
   });
 
@@ -38,13 +39,18 @@
       closed: 'The native network connection ended. You may retry.',
       connecting: `Connecting to ${address}. Game ownership and multiplayer are not yet verified.`,
       failed: 'The native client reported a connection failure. You may retry.',
-      timeout: 'No final native response received. The previous request may still be running.',
+      checking: 'Checking native transport state after delayed connection events…',
+      native_active: 'Native transport remains active. Gameplay admission is not yet verified.',
+      unconfirmed: 'Native state is unconfirmed. Connect remains locked until native closure is confirmed.',
+      cancel_requested: 'Disconnect requested. Waiting for native closure confirmation.',
       dispatch_failed: 'The native client could not accept the connection request.',
       disposed: 'Connection UI was closed.',
     };
     status.textContent = messages[phase] || messages.idle;
     const submit = document.querySelector('#connect-form button[type="submit"]');
     if (submit) submit.disabled = pending;
+    const disconnect = document.getElementById('connection-cancel');
+    if (disconnect) { disconnect.hidden = !pending || !nativeAvailable; disconnect.disabled = phase === 'cancel_requested'; }
     // Rebuild native server cards so all join actions share the same pending gate.
     renderAll();
   }
@@ -306,6 +312,9 @@
       case 'openvConnectClosed':
         if (connection.closed(message.nonce)) toast('The native connection ended.');
         break;
+      case 'openvConnectionProbe':
+        connection.probed(message.nonce, message.state);
+        break;
       case 'connectStatus':
         if (connection.progress(message.data?.nonce) &&
             typeof message.data?.message === 'string') toast(message.data.message);
@@ -345,6 +354,13 @@
     document.getElementById('refresh').addEventListener('click', () => { if (invoke('refreshServers')) toast('Refreshing server discovery…'); });
     document.getElementById('add-favorite').addEventListener('click', () => { switchView('home'); document.getElementById('server-address').focus(); toast('Connect to a server, then select its star to save it.'); });
     document.getElementById('clear-recents').addEventListener('click', () => { recents = []; writeStored(STORAGE_RECENT, []); renderRecents(); toast('Recent server history cleared.'); });
+    const disconnectDialog = document.getElementById('connection-disconnect-dialog');
+    document.getElementById('connection-cancel').addEventListener('click', () => disconnectDialog.showModal());
+    disconnectDialog.addEventListener('close', () => {
+      if (disconnectDialog.returnValue === 'disconnect' &&
+          !connection.requestCancel(nonce => invoke('openvCancelConnect', nonce)))
+        toast('Native disconnect could not be requested. Connection remains locked.');
+    });
     const dialog = document.getElementById('confirm-dialog');
     document.getElementById('quit').addEventListener('click', () => { if (confirmExit) dialog.showModal(); else invoke('quit'); });
     dialog.addEventListener('close', () => { if (dialog.returnValue === 'exit') invoke('quit'); });

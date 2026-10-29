@@ -1055,6 +1055,28 @@ static InitFunction initFunction([] ()
 			}
 			if (ConnectTo(hostName, true, "", uiNonce)) lastHostName = hostName;
 		}
+		else if (!_wcsicmp(type, L"openvConnectionProbe"))
+		{
+			const std::string nonce = arg ? ToNarrow(arg) : std::string();
+			if (!openv::connection::ValidNonce(nonce)) return;
+			const char* state = !g_connected ? "absent" :
+				(nonce == g_openvUIRequestNonce ? "active" : "other");
+			const auto reply = nlohmann::json::object({ { "type", "openvConnectionProbe" },
+				{ "nonce", nonce }, { "state", state } });
+			nui::PostFrameMessage("mpMenu", reply.dump());
+		}
+		else if (!_wcsicmp(type, L"openvCancelConnect"))
+		{
+			const std::string nonce = arg ? ToNarrow(arg) : std::string();
+			if (!openv::connection::ValidNonce(nonce) || !g_connected ||
+				nonce != g_openvUIRequestNonce || !netLibrary) return;
+			// A stale frame cannot terminate a newer or legacy connection.
+			g_openvUIRequestNonce.clear();
+			g_connected = false;
+			if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
+			netLibrary->Disconnect();
+			PostOpenVConnectionEvent("openvConnectClosed", nonce, "user_disconnect");
+		}
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{
 			if (!XBR_InterceptCancelDefer())
@@ -1064,6 +1086,8 @@ static InitFunction initFunction([] ()
 			netLibrary->Disconnect();
 
 			g_connected = false;
+			PostOpenVConnectionEvent("openvConnectClosed", g_openvUIRequestNonce, "deferred_cancel");
+			g_openvUIRequestNonce.clear();
 		}
 		else if (_wcsicmp(type, L"executeCommand") == 0)
 		{
