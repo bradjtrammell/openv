@@ -75,9 +75,11 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.closed('02'.repeat(16)), true);
   assert.equal(changes.at(-1).phase, 'closed');
   assert.equal(c.start('c:3', () => true).ok, true);
-  assert.equal(timers.size, 0);
+  assert.equal(timers.size, 1); // a new request owns its own watchdog
   assert.equal(c.active(), true);
-  assert.equal(c.probed('02'.repeat(16), 'absent'), true);
+  timers.values().next().value();
+  assert.equal(changes.at(-1).phase, 'checking');
+  assert.equal(c.probed('03'.repeat(16), 'absent'), true);
   assert.equal(c.active(), false);
 }
 {
