@@ -389,14 +389,20 @@
           result.reason === 'invalid' ? 'Enter the 43-character code from your authenticated OpenV session.' :
           'Could not forward the code to the native client. Retry or disconnect.';
     });
-    document.getElementById('admission-abort').addEventListener('click', () => admissionDialog.close('cancel'));
-    admissionDialog.addEventListener('close', () => {
-      if (admission.active()) {
-        admission.dismiss();
-        if (!connection.requestCancel(nonce => invoke('openvCancelConnect', nonce)))
-          toast('Native cancellation is unconfirmed. Disconnect remains available.');
-      }
+    function abortAdmission() {
+      if (!admission.active()) return;
+      // Clear the code synchronously on click or Escape, before the browser's
+      // asynchronous dialog close event can expose a stale secret.
+      admission.dismiss();
+      if (!connection.requestCancel(nonce => invoke('openvCancelConnect', nonce)))
+        toast('Native cancellation is unconfirmed. Disconnect remains available.');
+    }
+    document.getElementById('admission-abort').addEventListener('click', abortAdmission);
+    admissionDialog.addEventListener('cancel', event => {
+      event.preventDefault();
+      abortAdmission();
     });
+    admissionDialog.addEventListener('close', abortAdmission);
     const disconnectDialog = document.getElementById('connection-disconnect-dialog');
     document.getElementById('connection-cancel').addEventListener('click', () => disconnectDialog.showModal());
     disconnectDialog.addEventListener('close', () => {

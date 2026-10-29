@@ -389,6 +389,14 @@ class BrowserUITests(unittest.TestCase):
         self.assertEqual(self.page.locator('#admission-code').input_value(), '')
         self.assertIn(['openvCancelConnect', newer], self.page.evaluate('window.__calls'))
         self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", newer)
+        self.page.locator('#connect-form button[type=submit]').click()
+        newest = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [newest, card])
+        self.page.locator('#admission-code').fill('C' * 43)
+        self.page.locator('#admission-code').press('Escape')
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertIn(['openvCancelConnect', newest], self.page.evaluate('window.__calls'))
 
     def test_native_probe_does_not_grant_gameplay(self):
         self.load()
