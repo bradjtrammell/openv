@@ -308,6 +308,7 @@ class BrowserUITests(unittest.TestCase):
         self.assertFalse(any(c[0] == 'openvCancelConnect' for c in self.page.evaluate('window.__calls')))
         self.page.locator('#connection-cancel').click()
         self.page.locator('#connection-disconnect-dialog button[value=disconnect]').click()
+        self.page.wait_for_function("() => window.__calls.some(call => call[0] === 'openvCancelConnect')")
         self.assertIn(['openvCancelConnect', token], self.page.evaluate('window.__calls'))
         self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", '0' * 32)
