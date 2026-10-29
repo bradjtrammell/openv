@@ -356,6 +356,46 @@ class BrowserUITests(unittest.TestCase):
         self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
         self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
 
+    def test_expired_admission_clears_secret_and_cancels_native(self):
+        import json
+        self.page.clock.install()
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        card = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [
+                {'type': 'TextBlock', 'text': 'Connect to OpenV'},
+                {'type': 'TextBlock', 'text': 'Enter a one-time code.'},
+                {'type': 'Input.Text', 'id': 'join_code', 'maxLength': 43},
+            ],
+            'actions': [{'type': 'Action.Submit'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
+        self.page.locator('#admission-code').fill('S' * 43)
+        self.page.clock.fast_forward(60000)
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertIn(['openvCancelConnect', nonce], self.page.evaluate('window.__calls'))
+        self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+
+    def test_native_rejected_admission_cancels_matching_connection(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.page.evaluate("(n) => window.postMessage({type:'openvAdmissionRejected',nonce:n},'*')", '0' * 32)
+        self.assertFalse(any(c[0] == 'openvCancelConnect' for c in self.page.evaluate('window.__calls')))
+        self.page.evaluate("(n) => window.postMessage({type:'openvAdmissionRejected',nonce:n},'*')", nonce)
+        self.page.wait_for_function("() => window.__calls.some(c => c[0] === 'openvCancelConnect')")
+        self.assertIn(['openvCancelConnect', nonce], self.page.evaluate('window.__calls'))
+        self.assertIn('rejected', self.page.locator('#toast').inner_text())
+
     def test_openv_unsupported_card_cancels_and_dialog_abort_wipes_code(self):
         import json
         self.load()
