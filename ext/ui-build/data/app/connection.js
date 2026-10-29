@@ -124,6 +124,7 @@
     }
     return Object.freeze({
       start, active: () => pending !== null,
+      owns: token => matching(token),
       accepted: token => progress('accepted', token),
       progress: token => progress('connecting', token),
       transport, probed, requestCancel,

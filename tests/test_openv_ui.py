@@ -42,6 +42,7 @@ class UIArchiveTests(unittest.TestCase):
             self.assertTrue(set(ui.REQUIRED_MAIN + ui.REQUIRED_LOADSCREEN).issubset(archive.namelist()))
             self.assertIn(b'registerFrameFunction', archive.read('root.js'))
             self.assertIn(b'OpenVConnectionCoordinator', archive.read('app/connection.js'))
+            self.assertIn(b'OpenVAdmission', archive.read('app/admission.js'))
             self.assertIn(b'loadProgress', archive.read('loadscreen/code.js'))
         expected_main = {name for name in ui.MAIN_FILES if (source / name).is_file()}
         expected_loadscreen = {

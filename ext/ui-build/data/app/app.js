@@ -27,6 +27,23 @@
     onChange: updateConnectionState,
   });
 
+  const admission = window.OpenVAdmission.create({
+    show: () => {
+      const dialog = document.getElementById('admission-dialog');
+      const input = document.getElementById('admission-code');
+      input.value = '';
+      document.getElementById('admission-error').textContent = '';
+      dialog.showModal();
+      input.focus();
+    },
+    hide: () => {
+      document.getElementById('admission-code').value = '';
+      const dialog = document.getElementById('admission-dialog');
+      if (dialog.open) dialog.close();
+    },
+    dispatch: (nonce, code) => invoke('openvSubmitJoinCode', JSON.stringify([nonce, code])),
+  });
+
   function updateConnectionState({ phase, address, pending }) {
     const status = document.getElementById('connection-state');
     if (!status) return;
@@ -47,6 +64,7 @@
       disposed: 'Connection UI was closed.',
     };
     status.textContent = messages[phase] || messages.idle;
+    if (!pending || phase === 'cancel_requested') admission.dismiss();
     const submit = document.querySelector('#connect-form button[type="submit"]');
     if (submit) submit.disabled = pending;
     const disconnect = document.getElementById('connection-cancel');
@@ -292,8 +310,16 @@
         invoke('backfillDone');
         break;
       case 'connectCard':
-        invoke('cancelDefer');
-        toast('This server requested an unsupported interactive connection card; connection canceled.');
+        if (!connection.owns(message.nonce)) break;
+        if (!admission.present(message.nonce, message.data?.card)) {
+          admission.dismiss();
+          connection.requestCancel(nonce => invoke('openvCancelConnect', nonce));
+          toast('The server sent an unsupported admission card. Connection canceled.');
+        }
+        break;
+      case 'openvAdmissionCodeSubmitted':
+        if (connection.owns(message.nonce))
+          toast('One-time join code forwarded to the game server. Awaiting admission.');
         break;
       case 'setWarningMessage':
         if (typeof message.message === 'string') toast(message.message);
@@ -354,6 +380,23 @@
     document.getElementById('refresh').addEventListener('click', () => { if (invoke('refreshServers')) toast('Refreshing server discovery…'); });
     document.getElementById('add-favorite').addEventListener('click', () => { switchView('home'); document.getElementById('server-address').focus(); toast('Connect to a server, then select its star to save it.'); });
     document.getElementById('clear-recents').addEventListener('click', () => { recents = []; writeStored(STORAGE_RECENT, []); renderRecents(); toast('Recent server history cleared.'); });
+    const admissionDialog = document.getElementById('admission-dialog');
+    admissionDialog.querySelector('form').addEventListener('submit', event => {
+      event.preventDefault();
+      const result = admission.submit(document.getElementById('admission-code').value);
+      if (!result.ok)
+        document.getElementById('admission-error').textContent =
+          result.reason === 'invalid' ? 'Enter the 43-character code from your authenticated OpenV session.' :
+          'Could not forward the code to the native client. Retry or disconnect.';
+    });
+    document.getElementById('admission-abort').addEventListener('click', () => admissionDialog.close('cancel'));
+    admissionDialog.addEventListener('close', () => {
+      if (admission.active()) {
+        admission.dismiss();
+        if (!connection.requestCancel(nonce => invoke('openvCancelConnect', nonce)))
+          toast('Native cancellation is unconfirmed. Disconnect remains available.');
+      }
+    });
     const disconnectDialog = document.getElementById('connection-disconnect-dialog');
     document.getElementById('connection-cancel').addEventListener('click', () => disconnectDialog.showModal());
     disconnectDialog.addEventListener('close', () => {
@@ -365,7 +408,7 @@
     document.getElementById('quit').addEventListener('click', () => { if (confirmExit) dialog.showModal(); else invoke('quit'); });
     dialog.addEventListener('close', () => { if (dialog.returnValue === 'exit') invoke('quit'); });
     window.addEventListener('message', onNativeMessage);
-    window.addEventListener('pagehide', () => connection.dispose(), { once: true });
+    window.addEventListener('pagehide', () => { admission.dismiss(); connection.dispose(); }, { once: true });
     // Cfx queues native messages until its UI registers a listener. Flush them.
     if (typeof window.nuiInternalCallMessages === 'function') window.nuiInternalCallMessages();
     window.nuiInternalHandledMessages = true;

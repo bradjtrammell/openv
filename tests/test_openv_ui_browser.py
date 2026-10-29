@@ -43,6 +43,7 @@ class BrowserUITests(unittest.TestCase):
         if native:
             self.page.evaluate("window.__calls=[]; window.invokeNative=(action,arg)=>window.__calls.push([action,arg])")
         self.page.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
+        self.page.add_script_tag(content=(APP / 'admission.js').read_text(encoding='utf-8'))
         self.page.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
 
     def test_first_party_root_native_lifecycle_and_authenticated_dispatch(self):
@@ -83,6 +84,7 @@ class BrowserUITests(unittest.TestCase):
           window.invokeNative = (action, argument) => window.__calls.push([action, argument]);
         }''')
         child.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
+        child.add_script_tag(content=(APP / 'admission.js').read_text(encoding='utf-8'))
         child.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
         self.page.evaluate('''() => window.__push('frameCall', 'mpMenu', JSON.stringify({
           type: 'serverQueried', addr: 'root.example:30120', name: 'First-party root'
@@ -317,6 +319,77 @@ class BrowserUITests(unittest.TestCase):
         self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.assertTrue(self.page.locator('#connection-cancel').is_hidden())
 
+    def test_openv_join_code_card_submission_and_replay_fencing(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        card = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [
+                {'type': 'TextBlock', 'text': 'Connect to OpenV'},
+                {'type': 'TextBlock', 'text': 'Enter a one-time code.'},
+                {'type': 'Input.Text', 'id': 'join_code', 'maxLength': 43},
+            ],
+            'actions': [{'type': 'Action.Submit', 'title': 'Join server'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", ['0' * 32, card])
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
+        self.assertTrue(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.page.locator('#admission-code').fill('invalid')
+        self.page.locator('#admission-form button[type=submit]').click()
+        self.assertIn('43-character', self.page.locator('#admission-error').inner_text())
+        self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
+        code = 'A' * 42 + '_'
+        self.page.locator('#admission-code').fill(code)
+        self.page.locator('#admission-form button[type=submit]').click()
+        self.page.wait_for_function("!document.querySelector('#admission-dialog').open")
+        calls = [c for c in self.page.evaluate('window.__calls') if c[0] == 'openvSubmitJoinCode']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0][1]), [nonce, code])
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+
+    def test_openv_unsupported_card_cancels_and_dialog_abort_wipes_code(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        hostile = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [{'type': 'Input.Text', 'id': 'password'}],
+            'actions': [{'type': 'Action.OpenUrl', 'url': 'https://evil.invalid'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, hostile])
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.assertIn(['openvCancelConnect', nonce], self.page.evaluate('window.__calls'))
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.page.locator('#connect-form button[type=submit]').click()
+        newer = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        card = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [
+                {'type': 'TextBlock', 'text': 'Connect to OpenV'},
+                {'type': 'TextBlock', 'text': 'Enter a one-time code.'},
+                {'type': 'Input.Text', 'id': 'join_code', 'maxLength': 43},
+            ],
+            'actions': [{'type': 'Action.Submit'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [newer, card])
+        self.page.locator('#admission-code').fill('B' * 43)
+        self.page.locator('#admission-abort').click()
+        self.page.wait_for_function("!document.querySelector('#admission-dialog').open")
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertIn(['openvCancelConnect', newer], self.page.evaluate('window.__calls'))
+        self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
+
     def test_native_probe_does_not_grant_gameplay(self):
         self.load()
         self.page.locator('#server-address').fill('play.example:30120')
@@ -427,6 +500,7 @@ class BrowserUITests(unittest.TestCase):
         child.evaluate('''() => { window.__calls = []; window.invokeNative = (action, argument) => window.__calls.push([action, argument]); }''')
         child.add_style_tag(content=(APP / 'styles.css').read_text(encoding='utf-8'))
         child.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
+        child.add_script_tag(content=(APP / 'admission.js').read_text(encoding='utf-8'))
         child.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
         self.page.evaluate('''() => window.__rootPush('frameCall', 'mpMenu', JSON.stringify({
             type: 'serverQueried', addr: '127.0.0.1:30120', name: 'Trusted frame server', clients: 2, maxclients: 16

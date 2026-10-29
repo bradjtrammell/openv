@@ -3,3 +3,5 @@
 .connection-state{margin:13px 0 0;min-height:18px;font-size:12px;line-height:1.5;color:#b5d5fa}
 
 .connection-cancel{margin-top:13px}.connection-cancel[hidden]{display:none}
+
+.admission-dialog{width:min(460px,calc(100vw - 32px));max-width:none;line-height:1.6}.admission-dialog h2{margin:0 0 12px;font-size:21px}.admission-dialog label{display:block;margin:18px 0 8px;font-size:13px;font-weight:700}.admission-dialog input{display:block;width:100%;min-width:0;background:#101720;color:#f1f6ff;border:1px solid #607b9b;border-radius:8px;padding:13px 14px;font:inherit;font-size:15px;letter-spacing:.035em}.admission-dialog input:focus-visible{outline:2px solid #73b4ff;outline-offset:3px}.admission-dialog .admission-error{min-height:20px;margin:8px 0;color:#ffb7b7;font-size:12px}.admission-dialog .dialog-actions{flex-wrap:wrap}.admission-dialog .dialog-actions button{flex:1 1 150px}@media(prefers-reduced-motion:reduce){.admission-dialog *{transition:none!important}}

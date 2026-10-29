@@ -18,9 +18,12 @@ on:
       - 'ext/ui-build/loadscreen-fallback/**'
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_connection.mjs'
+      - 'tests/test_openv_admission.mjs'
       - 'tests/test_openv_connection_request.cpp'
+      - 'tests/test_openv_admission_code.cpp'
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
+      - 'code/components/glue/src/OpenVAdmissionCode.h'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   pull_request:
@@ -40,9 +43,12 @@ on:
       - 'ext/ui-build/loadscreen-fallback/**'
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_connection.mjs'
+      - 'tests/test_openv_admission.mjs'
       - 'tests/test_openv_connection_request.cpp'
+      - 'tests/test_openv_admission_code.cpp'
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
+      - 'code/components/glue/src/OpenVAdmissionCode.h'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   workflow_dispatch:
@@ -67,6 +73,8 @@ jobs:
           set -euo pipefail
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_connection_request.cpp -o /tmp/openv-connection-test
           /tmp/openv-connection-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_code.cpp -o /tmp/openv-admission-test
+          /tmp/openv-admission-test
       - name: Compile and run actual C++17 connection contract with MSVC
         if: runner.os == 'Windows'
         shell: pwsh
@@ -80,6 +88,9 @@ jobs:
           $command = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_connection_request.cpp /Fe:openv-connection-test.exe && openv-connection-test.exe'
           & cmd.exe /d /c $command
           if ($LASTEXITCODE -ne 0) { throw 'Native connection contract failed' }
+          $admission = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_code.cpp /Fe:openv-admission-test.exe && openv-admission-test.exe'
+          & cmd.exe /d /c $admission
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission card contract failed' }
   source-ui:
     strategy:
       fail-fast: false
@@ -103,10 +114,11 @@ jobs:
           set -euo pipefail
           node --check ext/ui-build/data/app/app.js
           node --check ext/ui-build/data/app/connection.js
+          node --check ext/ui-build/data/app/admission.js
           node --check ext/ui-build/data/root.js
           node --check ext/ui-build/loadscreen-fallback/code.js
       - name: Run native connection lifecycle regressions
-        run: node --test tests/test_openv_connection.mjs
+        run: node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs
       - name: Run archive and security tests
         run: python -m unittest discover -s tests -p test_openv_ui.py -v
       - name: Run Windows runtime and PE parser regression tests

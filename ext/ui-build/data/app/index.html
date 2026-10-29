@@ -8,6 +8,7 @@
   <title>OpenV — Multiplayer</title>
   <link rel="stylesheet" href="styles.css">
   <script src="connection.js" defer></script>
+  <script src="admission.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -33,6 +34,16 @@
   </main>
 </div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="admission-dialog" class="admission-dialog" aria-labelledby="admission-title" aria-describedby="admission-help">
+  <form id="admission-form" novalidate>
+    <h2 id="admission-title">Authorize this OpenV connection</h2>
+    <p id="admission-help">Generate a one-time connection code in your authenticated OpenV session. It expires after 90 seconds. The code is sent only to the connected game server.</p>
+    <label for="admission-code">One-time join code</label>
+    <input id="admission-code" name="join_code" type="text" maxlength="43" minlength="43" pattern="[A-Za-z0-9_-]{43}" autocomplete="off" autocapitalize="off" spellcheck="false" required aria-describedby="admission-help admission-error">
+    <p id="admission-error" class="admission-error" role="alert" aria-live="polite"></p>
+    <div class="dialog-actions"><button id="admission-abort" class="secondary" type="button">Cancel connection</button><button class="primary" type="submit">Submit join code</button></div>
+  </form>
+</dialog>
 <dialog id="connection-disconnect-dialog" aria-labelledby="disconnect-title"><form method="dialog"><h2 id="disconnect-title">Disconnect from server?</h2><p>This closes the native connection, including any active gameplay session.</p><div class="dialog-actions"><button value="cancel" class="secondary">Keep connected</button><button value="disconnect" class="primary">Disconnect</button></div></form></dialog>
 <dialog id="confirm-dialog" aria-labelledby="dialog-title"><form method="dialog"><h2 id="dialog-title">Exit OpenV?</h2><p>Any current multiplayer session will be closed.</p><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button value="exit" class="primary">Exit OpenV</button></div></form></dialog>
 </body>

@@ -21,9 +21,9 @@ MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAIN_FILES = (
     'root.html', 'root.js', 'root.css', 'jquery.js', 'jquery.mustache.js', 'mustache.js',
-    'app/index.html', 'app/connection.js', 'app/app.js', 'app/styles.css',
+    'app/index.html', 'app/connection.js', 'app/admission.js', 'app/app.js', 'app/styles.css',
 )
-REQUIRED_MAIN = ('root.html', 'root.js', 'root.css', 'app/index.html', 'app/connection.js', 'app/app.js', 'app/styles.css')
+REQUIRED_MAIN = ('root.html', 'root.js', 'root.css', 'app/index.html', 'app/connection.js', 'app/admission.js', 'app/app.js', 'app/styles.css')
 REQUIRED_LOADSCREEN = ('loadscreen/index.html', 'loadscreen/code.js')
 LOADSCREEN_EXTENSIONS = {'.html', '.js', '.css', '.json', '.png', '.jpg', '.jpeg', '.svg', '.webp', '.woff', '.woff2'}
 
