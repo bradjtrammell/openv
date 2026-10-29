@@ -6,6 +6,7 @@
  */
 
 #include "StdInc.h"
+#include "OpenVConnectionRequest.h"
 
 #include <CfxLocale.h>
 #include <CefOverlay.h>
@@ -79,6 +80,14 @@ inline auto& GetEarlyGameFrame()
 
 std::string g_lastConn;
 static std::string g_connectNonce;
+static std::string g_openvUIRequestNonce;
+
+static void PostOpenVConnectionEvent(const char* type, const std::string& nonce, const char* reason = "")
+{
+	if (nonce.empty()) return;
+	const auto message = nlohmann::json::object({ { "type", type }, { "nonce", nonce }, { "reason", reason } });
+	nui::PostFrameMessage("mpMenu", message.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace));
+}
 
 extern bool XBR_InterceptCardResponse(const nlohmann::json& j);
 extern bool XBR_InterceptCancelDefer();
@@ -246,7 +255,7 @@ static void SetNickname(const std::string& name)
 	UpdatePendingAuthPayload();
 }
 
-static void ConnectTo(const std::string& hostnameStr, bool fromUI = false, const std::string& connectParams = "")
+static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const std::string& connectParams = "", const std::string& uiNonce = "")
 {
 	auto connectParamsReal = connectParams;
 	static bool switched;
@@ -268,19 +277,30 @@ static void ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 			});
 			nui::PostFrameMessage("mpMenu", j.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace));
 
-			return;
+			return false;
 		}
 	}
 
 	if (g_connected)
 	{
 		trace("Ignoring ConnectTo because we're already connecting/connected.\n");
-		return;
+		PostOpenVConnectionEvent("openvConnectRejected", uiNonce, "busy");
+		return false;
 	}
 
 	g_connected = true;
-
-	nui::PostFrameMessage("mpMenu", R"({ "type": "connecting" })");
+	if (!uiNonce.empty())
+	{
+		g_connectNonce = uiNonce;
+		g_openvUIRequestNonce = uiNonce;
+		PostOpenVConnectionEvent("openvConnectAccepted", uiNonce);
+		PostOpenVConnectionEvent("connecting", uiNonce);
+	}
+	else
+	{
+		g_openvUIRequestNonce.clear();
+		nui::PostFrameMessage("mpMenu", R"({ "type": "connecting" })");
+	}
 
 	g_lastConn = hostnameStr;
 
@@ -292,6 +312,7 @@ static void ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 	{
 		netLibrary->ConnectToServer(hostnameStr);
 	}
+	return true;
 }
 
 static std::string g_pendingAuthPayload;
@@ -614,6 +635,7 @@ static InitFunction initFunction([] ()
 
 		netLibrary->OnConnectOKReceived.Connect([](NetAddress)
 		{
+			PostOpenVConnectionEvent("openvTransportConnected", g_openvUIRequestNonce);
 			auto peerAddress = netLibrary->GetCurrentPeer().ToString();
 
 			nui::PostRootMessage(fmt::sprintf(R"({ "type": "setServerAddress", "data": "%s" })", peerAddress));
@@ -623,6 +645,8 @@ static InitFunction initFunction([] ()
 		{
 			InitializeBuildSwitch(build, pureLevel, std::move(poolSizesIncreaseSetting), defaultBuild);
 			g_connected = false;
+			PostOpenVConnectionEvent("openvConnectClosed", g_openvUIRequestNonce, "build_switch");
+			g_openvUIRequestNonce.clear();
 		});
 
 		netLibrary->OnConnectionErrorRichEvent.Connect([] (const std::string& errorOrig, const std::string& metaData)
@@ -642,6 +666,8 @@ static InitFunction initFunction([] ()
 			console::Printf("no_console", "OnConnectionError: %s\n", error);
 
 			g_connected = false;
+			const auto failedNonce = g_openvUIRequestNonce;
+			g_openvUIRequestNonce.clear();
 
 			rapidjson::Document document;
 			document.SetString(error.c_str(), document.GetAllocator());
@@ -651,7 +677,7 @@ static InitFunction initFunction([] ()
 
 			document.Accept(writer);
 
-			nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "connectFailed", "message": %s, "extra": %s })", sbuffer.GetString(), metaData));
+			nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "connectFailed", "message": %s, "extra": %s, "nonce": %s })", sbuffer.GetString(), metaData, nlohmann::json(failedNonce).dump()));
 
 			ep.Call("connectionError", error);
 		});
@@ -666,6 +692,7 @@ static InitFunction initFunction([] ()
 			document.AddMember("count", progress, document.GetAllocator());
 			document.AddMember("total", totalProgress, document.GetAllocator());
 			document.AddMember("cancelable", cancelable, document.GetAllocator());
+			document.AddMember("nonce", rapidjson::Value(g_openvUIRequestNonce.c_str(), g_openvUIRequestNonce.size(), document.GetAllocator()), document.GetAllocator());
 
 			rapidjson::StringBuffer sbuffer;
 			rapidjson::Writer<rapidjson::StringBuffer> writer(sbuffer);
@@ -755,6 +782,8 @@ static InitFunction initFunction([] ()
 	OnKillNetwork.Connect([](const char*)
 	{
 		g_connected = false;
+		PostOpenVConnectionEvent("openvConnectClosed", g_openvUIRequestNonce, "network_closed");
+		g_openvUIRequestNonce.clear();
 
 		SetShellIcon("");
 	});
@@ -1003,23 +1032,28 @@ static InitFunction initFunction([] ()
 		else if (!_wcsicmp(type, L"connectTo"))
 		{
 			std::string hostName = ToNarrow(arg);
-
-			try
+			std::string uiNonce;
+			// First-party NUI sends [endpoint, 128-bit request nonce]. Preserve
+			// the legacy raw endpoint path for inherited native callers.
+			if (!hostName.empty() && hostName.front() == '[')
 			{
-				auto j = nlohmann::json::parse(hostName);
-				hostName = j[0].get<std::string>();
-
-				if (j.size() >= 2)
+				try
 				{
-					g_connectNonce = j[1].get<std::string>();
+					const auto request = nlohmann::json::parse(hostName);
+					if (!request.is_array() || request.size() != 2 ||
+						!request[0].is_string() || !request[1].is_string()) return;
+					hostName = request[0].get<std::string>();
+					uiNonce = request[1].get<std::string>();
+				}
+				catch (...) { return; }
+				if (!openv::connection::ValidNonce(uiNonce)) return;
+				if (!openv::connection::ValidEndpoint(hostName))
+				{
+					PostOpenVConnectionEvent("openvConnectRejected", uiNonce, "invalid_endpoint");
+					return;
 				}
 			}
-			catch (...)
-			{
-			}
-
-			lastHostName = hostName;
-			ConnectTo(hostName, true);
+			if (ConnectTo(hostName, true, "", uiNonce)) lastHostName = hostName;
 		}
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{
