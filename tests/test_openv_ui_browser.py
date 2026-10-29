@@ -259,6 +259,29 @@ class BrowserUITests(unittest.TestCase):
         self.assertEqual(len(json.loads(connect[0][1])[1]), 32)
         self.assertIn('play.example.com:30120', self.page.locator('#recent-list').inner_text())
 
+    def test_real_native_stages_and_pending_probe_never_claim_gameplay(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        for stage, expected in [
+            ('downloading', 'downloading server resources'),
+            ('download_complete', 'resource transfer completed'),
+            ('connected', 'network transport connected'),
+            ('active', 'gameplay admission'),
+        ]:
+            self.page.evaluate("(a) => window.postMessage({type:'openvNativeStage',nonce:a[0],stage:a[1]},'*')", [nonce, stage])
+            self.page.wait_for_function("(text) => document.querySelector('#connection-state').textContent.includes(text)", expected)
+            self.assertIn(expected, self.page.locator('#connection-state').inner_text())
+            self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(n) => window.postMessage({type:'openvNativeStage',nonce:n,stage:'__proto__'},'*')", nonce)
+        self.assertIn('gameplay admission', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(n) => window.postMessage({type:'openvTransportConnected',nonce:n},'*')", nonce)
+        self.assertIn('gameplay admission', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+
     def test_native_connection_pending_gate_failure_and_retry(self):
         self.load()
         self.page.locator('#server-address').fill('play.example.com:30120')

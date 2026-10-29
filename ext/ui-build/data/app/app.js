@@ -66,7 +66,15 @@
       connecting: `Connecting to ${address}. Game ownership and multiplayer are not yet verified.`,
       failed: 'The native client reported a connection failure. You may retry.',
       checking: 'Checking native transport state after delayed connection events…',
-      native_active: 'Native transport remains active. Gameplay admission is not yet verified.',
+      native_active: 'Cfx network session is active. FXServer gameplay admission, player entities and resource execution are not yet verified.',
+      native_pending: 'Native connection remains in progress. Checking again in five seconds.',
+      native_initializing: 'Native client is initializing the server connection.',
+      native_handshake: 'Server initialization received. Waiting for resource transfer.',
+      native_downloading: 'Native client is downloading server resources. Execution is not yet verified.',
+      native_download_complete: 'Native resource transfer completed. Loading and gameplay are not yet verified.',
+      native_fetching: 'Native client is fetching server session data.',
+      native_connecting: 'Native client is establishing the Cfx network session.',
+      native_connected: 'Cfx network transport connected. Gameplay admission is not yet verified.',
       unconfirmed: 'Native state is unconfirmed. Connect remains locked until native closure is confirmed.',
       cancel_requested: 'Disconnect requested. Waiting for native closure confirmation.',
       dispatch_failed: 'The native client could not accept the connection request.',
@@ -350,6 +358,9 @@
         break;
       case 'openvTransportConnected':
         if (connection.transport(message.nonce)) toast('Server transport connected. Waiting for game admission.');
+        break;
+      case 'openvNativeStage':
+        connection.nativeStage(message.nonce, message.stage);
         break;
       case 'openvConnectClosed':
         if (connection.closed(message.nonce)) toast('The native connection ended.');

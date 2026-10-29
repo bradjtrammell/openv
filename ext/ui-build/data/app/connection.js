@@ -3,6 +3,16 @@
   'use strict';
   const WAIT_MS = 90000;
   const PROBE_MS = 5000;
+  const NATIVE_STAGES = Object.freeze({
+    initializing: 'native_initializing',
+    handshake: 'native_handshake',
+    downloading: 'native_downloading',
+    download_complete: 'native_download_complete',
+    fetching: 'native_fetching',
+    connecting: 'native_connecting',
+    connected: 'native_connected',
+    active: 'native_active',
+  });
   function create({ crypto, schedule, cancel, onChange, probe }) {
     if (![schedule, cancel, onChange, probe].every(fn => typeof fn === 'function'))
       throw new TypeError('Invalid connection coordinator');
@@ -44,7 +54,7 @@
       publish('unconfirmed', request.address);
     }
     function checkNative(request) {
-      if (pending !== request || request.phase === 'transport') return;
+      if (pending !== request || request.phase === 'transport' || request.phase === 'native_active') return;
       request.phase = 'checking';
       publish('checking', request.address);
       if (!arm(request, PROBE_MS, () => unconfirmed(request))) {
@@ -86,7 +96,8 @@
     }
     function progress(phase, token) {
       if (!matching(token)) return false;
-      if (pending.phase === 'transport' || pending.phase === 'cancel_requested') return true;
+      if (pending.phase === 'transport' || pending.phase === 'cancel_requested' ||
+          pending.phase.startsWith('native_')) return true;
       pending.phase = phase;
       publish(phase, pending.address);
       const request = pending;
@@ -95,19 +106,41 @@
     }
     function transport(token) {
       if (!matching(token)) return false;
+      if (pending.phase === 'cancel_requested' || pending.phase.startsWith('native_')) return true;
       clear(pending);
       pending.phase = 'transport';
       publish('transport', pending.address);
       return true;
     }
+    function nativeStage(token, stage) {
+      if (!matching(token) || !Object.prototype.hasOwnProperty.call(NATIVE_STAGES, stage) ||
+          pending.phase === 'cancel_requested') return false;
+      const request = pending;
+      const phase = NATIVE_STAGES[stage];
+      if (request.phase === 'native_active' && phase !== 'native_active') return false;
+      request.phase = phase;
+      publish(phase, request.address);
+      if (phase === 'native_active') clear(request);
+      else if (!arm(request, WAIT_MS, () => checkNative(request))) unconfirmed(request);
+      return true;
+    }
     function probed(token, state) {
-      if (!matching(token) || !['active', 'absent', 'other'].includes(state)) return false;
-      if (state !== 'active') return release('closed');
-      if (pending.phase === 'checking' || pending.phase === 'unconfirmed') {
+      if (!matching(token) || !['active', 'pending', 'absent', 'other'].includes(state)) return false;
+      if (state === 'absent' || state === 'other') return release('closed');
+      if (state === 'active') {
         clear(pending);
-        pending.phase = 'native_active';
-        publish('native_active', pending.address);
+        if (pending.phase !== 'cancel_requested') {
+          pending.phase = 'native_active';
+          publish('native_active', pending.address);
+        }
+        return true;
       }
+      if (pending.phase === 'cancel_requested') return true;
+      if (pending.phase === 'native_active') return false;
+      const request = pending;
+      request.phase = 'native_pending';
+      publish('native_pending', request.address);
+      if (!arm(request, PROBE_MS, () => checkNative(request))) unconfirmed(request);
       return true;
     }
     function requestCancel(dispatch) {
@@ -127,7 +160,7 @@
       owns: token => matching(token),
       accepted: token => progress('accepted', token),
       progress: token => progress('connecting', token),
-      transport, probed, requestCancel,
+      transport, nativeStage, probed, requestCancel,
       failed: token => matching(token) && release('failed'),
       rejected: token => matching(token) && release('rejected'),
       closed: token => matching(token) && release('closed'),

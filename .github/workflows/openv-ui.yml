@@ -24,6 +24,8 @@ on:
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'code/components/glue/src/OpenVAdmissionCode.h'
+      - 'code/components/glue/src/OpenVNetLifecycle.h'
+      - 'tests/test_openv_net_lifecycle.cpp'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   pull_request:
@@ -49,6 +51,8 @@ on:
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'code/components/glue/src/OpenVAdmissionCode.h'
+      - 'code/components/glue/src/OpenVNetLifecycle.h'
+      - 'tests/test_openv_net_lifecycle.cpp'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   workflow_dispatch:
@@ -75,6 +79,8 @@ jobs:
           /tmp/openv-connection-test
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_code.cpp -o /tmp/openv-admission-test
           /tmp/openv-admission-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_net_lifecycle.cpp -o /tmp/openv-net-lifecycle-test
+          /tmp/openv-net-lifecycle-test
       - name: Compile and run actual C++17 connection contract with MSVC
         if: runner.os == 'Windows'
         shell: pwsh
@@ -91,6 +97,9 @@ jobs:
           $admission = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_code.cpp /Fe:openv-admission-test.exe && openv-admission-test.exe'
           & cmd.exe /d /c $admission
           if ($LASTEXITCODE -ne 0) { throw 'Native admission card contract failed' }
+          $lifecycle = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_net_lifecycle.cpp /Fe:openv-net-lifecycle-test.exe && openv-net-lifecycle-test.exe'
+          & cmd.exe /d /c $lifecycle
+          if ($LASTEXITCODE -ne 0) { throw 'Native NetLibrary lifecycle contract failed' }
   source-ui:
     strategy:
       fail-fast: false

@@ -8,6 +8,7 @@
 #include "StdInc.h"
 #include "OpenVConnectionRequest.h"
 #include "OpenVAdmissionCode.h"
+#include "OpenVNetLifecycle.h"
 
 #include <CfxLocale.h>
 #include <CefOverlay.h>
@@ -231,6 +232,12 @@ void loadSettings() {
 
 NetLibrary* netLibrary;
 static bool g_connected;
+
+static_assert(NetLibrary::CS_IDLE == 0 && NetLibrary::CS_INITING == 1 &&
+    NetLibrary::CS_INITRECEIVED == 2 && NetLibrary::CS_DOWNLOADING == 3 &&
+    NetLibrary::CS_DOWNLOADCOMPLETE == 4 && NetLibrary::CS_FETCHING == 5 &&
+    NetLibrary::CS_CONNECTING == 6 && NetLibrary::CS_CONNECTED == 7 &&
+    NetLibrary::CS_ACTIVE == 8, "OpenV NetLibrary stage mapping changed");
 
 static void UpdatePendingAuthPayload();
 
@@ -593,6 +600,33 @@ static InitFunction initFunction([] ()
 	NetLibrary::OnNetLibraryCreate.Connect([] (NetLibrary* lib)
 	{
 		netLibrary = lib;
+
+		// Report actual Cfx native stages; a transport session is not gameplay authorization.
+		netLibrary->OnStateChanged.Connect([](NetLibrary::ConnectionState state, NetLibrary::ConnectionState)
+		{
+			const auto nonce = g_openvUIRequestNonce;
+			if (!openv::connection::ValidNonce(nonce)) return;
+			if (state == NetLibrary::CS_IDLE)
+			{
+				if (g_connected && netLibrary &&
+					netLibrary->GetConnectionState() == NetLibrary::CS_IDLE)
+				{
+					g_connected = false;
+					g_openvAdmissionCard.Clear();
+					g_cardConnectionToken.clear();
+					g_openvUIRequestNonce.clear();
+					PostOpenVConnectionEvent("openvConnectClosed", nonce, "native_idle");
+				}
+				return;
+			}
+			if (!g_connected) return;
+			const char* stage = openv::connection::NativeStageName(static_cast<int>(state));
+			if (!stage) return;
+			const auto message = nlohmann::json::object({
+				{ "type", "openvNativeStage" }, { "nonce", nonce }, { "stage", stage }
+			});
+			nui::PostFrameMessage("mpMenu", message.dump());
+		});
 
 		netLibrary->OnInfoBlobReceived.Connect([](std::string_view sv, const std::function<void()>& cb)
 		{
@@ -1076,7 +1110,9 @@ static InitFunction initFunction([] ()
 			const std::string nonce = arg ? ToNarrow(arg) : std::string();
 			if (!openv::connection::ValidNonce(nonce)) return;
 			const char* state = !g_connected ? "absent" :
-				(nonce == g_openvUIRequestNonce ? "active" : "other");
+				(nonce != g_openvUIRequestNonce ? "other" :
+				(netLibrary && openv::connection::NativeTransportActive(
+					static_cast<int>(netLibrary->GetConnectionState())) ? "active" : "pending"));
 			const auto reply = nlohmann::json::object({ { "type", "openvConnectionProbe" },
 				{ "nonce", nonce }, { "state", state } });
 			nui::PostFrameMessage("mpMenu", reply.dump());

@@ -154,4 +154,49 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.probed(token, 'other'), true);
   assert.equal(c.active(), false);
 }
+{
+  let counter = 0;
+  const { coordinator: c, changes, timers, probes } = fixture({
+    getRandomValues(bytes) { bytes.fill(++counter); return bytes; },
+  });
+  const first = '01'.repeat(16), second = '02'.repeat(16);
+  assert.equal(c.start('first.example:30120', () => true).ok, true);
+  for (const stage of ['initializing', 'handshake', 'downloading', 'download_complete',
+                       'fetching', 'connecting', 'connected', 'active']) {
+    assert.equal(c.nativeStage(first, stage), true);
+    assert.equal(changes.at(-1).phase, 'native_' + stage);
+    assert.equal(c.active(), true);
+  }
+  assert.equal(timers.size, 0, 'native active has no pending connection timeout');
+  assert.equal(c.progress(first), true);
+  assert.equal(changes.at(-1).phase, 'native_active', 'legacy progress cannot downgrade active');
+  assert.equal(c.transport(first), true);
+  assert.equal(changes.at(-1).phase, 'native_active', 'late transport event cannot downgrade active');
+  assert.equal(c.nativeStage(first, 'downloading'), false, 'late native stage cannot downgrade active');
+  assert.equal(c.probed(first, 'pending'), false, 'stale pending probe cannot downgrade active');
+  assert.equal(changes.at(-1).phase, 'native_active');
+  assert.equal(c.nativeStage(first, '__proto__'), false);
+  assert.equal(c.nativeStage(first, 'idle'), false);
+  assert.equal(c.nativeStage(second, 'downloading'), false);
+  assert.equal(c.closed(first), true);
+  assert.equal(c.start('second.example:30120', () => true).ok, true);
+  assert.equal(c.nativeStage(first, 'active'), false, 'old native state cannot affect replacement');
+  assert.equal(c.nativeStage(second, 'downloading'), true);
+  assert.equal(changes.at(-1).phase, 'native_downloading');
+  timers.values().next().value();
+  assert.equal(changes.at(-1).phase, 'checking');
+  assert.deepEqual(probes, [second]);
+  assert.equal(c.probed(second, 'pending'), true);
+  assert.equal(changes.at(-1).phase, 'native_pending');
+  assert.equal(timers.size, 1, 'pending native connection must be probed again');
+  timers.values().next().value();
+  assert.equal(probes.length, 2);
+  assert.equal(c.probed(second, 'active'), true);
+  assert.equal(changes.at(-1).phase, 'native_active');
+  assert.equal(timers.size, 0);
+  assert.equal(c.requestCancel(() => true), true);
+  assert.equal(c.nativeStage(second, 'active'), false, 'cancellation cannot be undone by native stage');
+  assert.equal(changes.at(-1).phase, 'cancel_requested');
+  assert.equal(c.closed(second), true);
+}
 console.log('PASS: native connection coordination, nonce, duplicate fencing, timeout, stale callbacks and failure recovery');
