@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "OpenVConnectionRequest.h"
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,28 +22,39 @@ inline bool ValidCode(std::string_view code)
 }
 class CardSession
 {
+public:
+    using Clock = std::chrono::steady_clock;
+    static constexpr auto SubmissionWindow = std::chrono::seconds(60);
+private:
     std::string nonce_;
     std::string token_;
+    Clock::time_point armed_at_{};
 public:
-    bool Arm(std::string_view nonce, std::string_view token)
+    bool Arm(std::string_view nonce, std::string_view token, Clock::time_point now = Clock::now())
     {
         Clear();
         if (!connection::ValidNonce(nonce) || token.empty() || token.size() > 1024) return false;
         nonce_.assign(nonce.data(), nonce.size());
         token_.assign(token.data(), token.size());
+        armed_at_ = now;
         return true;
     }
-    bool Active(std::string_view nonce) const
+    bool Active(std::string_view nonce, Clock::time_point now = Clock::now()) const
     {
-        return !token_.empty() && nonce_ == nonce;
+        return !token_.empty() && nonce_ == nonce && now >= armed_at_ && now - armed_at_ < SubmissionWindow;
     }
-    bool Take(std::string_view nonce, std::string_view code, std::string& token)
+    bool Take(std::string_view nonce, std::string_view code, std::string& token,
+              Clock::time_point now = Clock::now())
     {
-        if (!Active(nonce) || !ValidCode(code)) return false;
+        if (!Active(nonce, now) || !ValidCode(code))
+        {
+            if (!token_.empty() && (now < armed_at_ || now - armed_at_ >= SubmissionWindow)) Clear();
+            return false;
+        }
         token = std::move(token_);
         Clear();
         return true;
     }
-    void Clear() { nonce_.clear(); token_.clear(); }
+    void Clear() { nonce_.clear(); token_.clear(); armed_at_ = Clock::time_point{}; }
 };
 }
