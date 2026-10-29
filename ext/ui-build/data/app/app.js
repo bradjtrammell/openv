@@ -42,6 +42,15 @@
       if (dialog.open) dialog.close();
     },
     dispatch: (nonce, code) => invoke('openvSubmitJoinCode', JSON.stringify([nonce, code])),
+    schedule: (callback, ms) => window.setTimeout(callback, ms),
+    cancel: timer => window.clearTimeout(timer),
+    now: () => window.performance.now(),
+    onExpire: nonce => {
+      if (connection.owns(nonce)) {
+        connection.requestCancel(token => invoke('openvCancelConnect', token));
+        toast('Admission entry timed out. Generate a fresh one-time code and reconnect.');
+      }
+    },
   });
 
   function updateConnectionState({ phase, address, pending }) {
@@ -321,6 +330,13 @@
         if (connection.owns(message.nonce))
           toast('One-time join code forwarded to the game server. Awaiting admission.');
         break;
+      case 'openvAdmissionRejected':
+        if (connection.owns(message.nonce)) {
+          admission.dismiss();
+          connection.requestCancel(token => invoke('openvCancelConnect', token));
+          toast('The native admission capability expired or was rejected. Generate a fresh code and reconnect.');
+        }
+        break;
       case 'setWarningMessage':
         if (typeof message.message === 'string') toast(message.message);
         break;
@@ -387,6 +403,7 @@
       if (!result.ok)
         document.getElementById('admission-error').textContent =
           result.reason === 'invalid' ? 'Enter the 43-character code from your authenticated OpenV session.' :
+          ['expired', 'clock'].includes(result.reason) ? 'Admission timed out. Generate a fresh code and reconnect.' :
           'Could not forward the code to the native client. Retry or disconnect.';
     });
     function abortAdmission() {
