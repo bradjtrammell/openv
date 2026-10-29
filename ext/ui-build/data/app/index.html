@@ -37,7 +37,7 @@
 <dialog id="admission-dialog" class="admission-dialog" aria-labelledby="admission-title" aria-describedby="admission-help">
   <form id="admission-form" novalidate>
     <h2 id="admission-title">Authorize this OpenV connection</h2>
-    <p id="admission-help">Generate a one-time connection code in your authenticated OpenV session. It expires after 90 seconds. The code is sent only to the connected game server.</p>
+    <p id="admission-help">Generate a one-time connection code in your authenticated OpenV session. The server code expires after 90 seconds. For safety, this entry window closes after 60 seconds; request a fresh code if it times out. The code is sent only to the connected game server.</p>
     <label for="admission-code">One-time join code</label>
     <input id="admission-code" name="join_code" type="text" maxlength="43" minlength="43" pattern="[A-Za-z0-9_-]{43}" autocomplete="off" autocapitalize="off" spellcheck="false" required aria-describedby="admission-help admission-error">
     <p id="admission-error" class="admission-error" role="alert" aria-live="polite"></p>
