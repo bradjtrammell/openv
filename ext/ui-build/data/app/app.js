@@ -13,6 +13,31 @@
   let recents = [];
   let confirmExit = true;
   let toastTimer;
+  const connection = window.OpenVConnectionCoordinator.create({
+    crypto: window.crypto,
+    schedule: (callback, ms) => window.setTimeout(callback, ms),
+    cancel: timer => window.clearTimeout(timer),
+    onChange: updateConnectionState,
+  });
+
+  function updateConnectionState({ phase, address, pending }) {
+    const status = document.getElementById('connection-state');
+    if (!status) return;
+    const messages = {
+      idle: 'No active connection request.',
+      requested: `Native connection requested for ${address}. Waiting for server response.`,
+      connecting: `Connecting to ${address}. Game ownership and multiplayer are not yet verified.`,
+      failed: 'The native client reported a connection failure. You may retry.',
+      timeout: 'No final native response received. The previous request may still be running.',
+      dispatch_failed: 'The native client could not accept the connection request.',
+      disposed: 'Connection UI was closed.',
+    };
+    status.textContent = messages[phase] || messages.idle;
+    const submit = document.querySelector('#connect-form button[type="submit"]');
+    if (submit) submit.disabled = pending;
+    // Rebuild native server cards so all join actions share the same pending gate.
+    renderAll();
+  }
 
   function parseEndpoint(value) {
     if (typeof value !== 'string' || value.length > 255) return null;
@@ -109,18 +134,22 @@
       toast('This OpenV gateway supports discovery only. GTA V gameplay is not available on this endpoint.');
       return false;
     }
-    // A fresh unpredictable correlation nonce is required for every attempt.
-    // Never fall back to an empty or predictable value if CEF crypto fails.
-    let nonce;
-    try {
-      if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') throw new Error('crypto unavailable');
-      nonce = Array.from(window.crypto.getRandomValues(new Uint8Array(16)),
-        byte => byte.toString(16).padStart(2, '0')).join('');
-    } catch {
-      toast('Secure connection initialization is unavailable. Restart OpenV and try again.');
+    if (!nativeAvailable) {
+      toast('OpenV native client is not available in this browser preview.');
       return false;
     }
-    if (!invoke('connectTo', JSON.stringify([parsed, nonce]))) return false;
+    const result = connection.start(parsed, (endpoint, nonce) =>
+      invoke('connectTo', JSON.stringify([endpoint, nonce])));
+    if (!result.ok) {
+      const errors = {
+        busy: 'A native connection request is already pending. Wait for its result.',
+        crypto: 'Secure connection initialization is unavailable. Restart OpenV and try again.',
+        timer: 'The client cannot monitor this connection request. Restart OpenV.',
+        dispatch: 'The native client could not accept the connection request.',
+      };
+      toast(errors[result.reason] || 'Unable to request this connection.');
+      return false;
+    }
     addRecent(parsed);
     toast(`Connection requested for ${parsed}. Waiting for the game client.`);
     return true;
@@ -154,6 +183,7 @@
       join.textContent = 'Not playable yet';
       join.title = 'The OpenV gateway is not connected to a GTA V gameplay transport';
     } else {
+      join.disabled = connection.active();
       join.addEventListener('click', () => connect(address));
     }
     const favorite = document.createElement('button'); favorite.className = 'star'; favorite.type = 'button';
@@ -255,15 +285,19 @@
       case 'queryingFailed':
         toast('The server did not respond to the query. Check its address and availability.'); break;
       case 'connectStatus':
+        connection.progress();
         if (message.data && typeof message.data.message === 'string') toast(message.data.message);
         break;
       case 'connectFailed':
+        connection.failed();
         if (typeof message.message === 'string') toast(`Connection failed: ${message.message}`);
         break;
       case 'connecting':
+        connection.progress();
         toast('Connecting to server…');
         break;
       case 'connectionStatus':
+        connection.progress();
         if (typeof message.message === 'string') toast(message.message);
         break;
       default: break;
@@ -294,10 +328,12 @@
     document.getElementById('quit').addEventListener('click', () => { if (confirmExit) dialog.showModal(); else invoke('quit'); });
     dialog.addEventListener('close', () => { if (dialog.returnValue === 'exit') invoke('quit'); });
     window.addEventListener('message', onNativeMessage);
+    window.addEventListener('pagehide', () => connection.dispose(), { once: true });
     // Cfx queues native messages until its UI registers a listener. Flush them.
     if (typeof window.nuiInternalCallMessages === 'function') window.nuiInternalCallMessages();
     window.nuiInternalHandledMessages = true;
     renderAll();
+    updateConnectionState({ phase: 'idle', address: '', pending: false });
     if (nativeAvailable) {
       invoke('getMinModeInfo'); // Required by the inherited Cfx NUI startup lifecycle.
       invoke('getFavorites');
