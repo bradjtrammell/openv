@@ -293,8 +293,17 @@ class BrowserUITests(unittest.TestCase):
         self.page.evaluate("(nonce) => window.postMessage({type:'connecting',nonce},'*')", nonce)
         self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('not yet verified')")
         self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Rejected by server'},'*')", nonce)
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('Waiting for Cfx')")
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        # A failed native connection can remain non-IDLE. Neither a stale
+        # ACTIVE callback nor a pending probe may reopen the connection gate.
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvNativeStage',nonce,stage:'active'},'*')", nonce)
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'pending'},'*')", nonce)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertIn('Waiting for Cfx', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'absent'},'*')", nonce)
         self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
-        self.assertIn('connection failure', self.page.locator('#connection-state').inner_text())
+        self.assertIn('native network connection ended', self.page.locator('#connection-state').inner_text())
         self.page.locator('#connect-form button[type=submit]').click()
         self.assertEqual(len([call for call in self.page.evaluate('window.__calls') if call[0] == 'connectTo']), 2)
 
