@@ -232,6 +232,7 @@ void loadSettings() {
 
 NetLibrary* netLibrary;
 static bool g_connected;
+static std::string g_cardConnectionToken;
 
 static_assert(NetLibrary::CS_IDLE == 0 && NetLibrary::CS_INITING == 1 &&
     NetLibrary::CS_INITRECEIVED == 2 && NetLibrary::CS_DOWNLOADING == 3 &&
@@ -379,8 +380,6 @@ static void HandleAuthPayload(const std::string& payloadStr)
 
 static std::string g_discourseClientId;
 static std::string g_discourseUserToken;
-
-static std::string g_cardConnectionToken;
 
 struct ServerLink
 {
