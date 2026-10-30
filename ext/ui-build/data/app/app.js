@@ -354,7 +354,15 @@
         connection.accepted(message.nonce);
         break;
       case 'openvConnectRejected':
-        if (connection.rejected(message.nonce)) toast('The native client rejected this connection request.');
+        if (connection.rejected(message.nonce)) {
+          const reasons = {
+            busy: 'Another game connection is already active.',
+            native_unavailable: 'The GTA V network runtime is not ready. Wait for the game client to initialize and retry.',
+            invalid_endpoint: 'The native game client rejected this server address.',
+          };
+          toast(Object.prototype.hasOwnProperty.call(reasons, message.reason)
+            ? reasons[message.reason] : 'The native client rejected this connection request.');
+        }
         break;
       case 'openvTransportConnected':
         if (connection.transport(message.nonce)) toast('Server transport connected. Waiting for game admission.');
@@ -363,7 +371,9 @@
         connection.nativeStage(message.nonce, message.stage);
         break;
       case 'openvConnectClosed':
-        if (connection.closed(message.nonce)) toast('The native connection ended.');
+        if (connection.closed(message.nonce)) toast(message.reason === 'native_start_failed'
+          ? 'The game network runtime failed to start the connection. You can retry.'
+          : 'The native connection ended.');
         break;
       case 'openvConnectionProbe':
         connection.probed(message.nonce, message.state);

@@ -290,10 +290,13 @@ static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 		}
 	}
 
-	if (g_connected)
+	const auto readiness = openv::connection::CheckNativeStart(g_connected, netLibrary != nullptr);
+	if (readiness != openv::connection::NativeStartReadiness::ready)
 	{
-		trace("Ignoring ConnectTo because we're already connecting/connected.\n");
-		PostOpenVConnectionEvent("openvConnectRejected", uiNonce, "busy");
+		const char* reason = readiness == openv::connection::NativeStartReadiness::busy
+			? "busy" : "native_unavailable";
+		trace("OpenV native connection refused: %s\n", reason);
+		PostOpenVConnectionEvent("openvConnectRejected", uiNonce, reason);
 		return false;
 	}
 
@@ -314,13 +317,27 @@ static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 
 	g_lastConn = hostnameStr;
 
-	if (!hostnameStr.empty() && hostnameStr[0] == '-')
+	const bool dispatched = openv::connection::DispatchNativeStart([&]()
 	{
-		netLibrary->ConnectToServer("cfx.re/join/" + hostnameStr.substr(1));
-	}
-	else
+		if (!hostnameStr.empty() && hostnameStr[0] == '-')
+		{
+			netLibrary->ConnectToServer("cfx.re/join/" + hostnameStr.substr(1));
+		}
+		else
+		{
+			netLibrary->ConnectToServer(hostnameStr);
+		}
+	});
+	if (!dispatched)
 	{
-		netLibrary->ConnectToServer(hostnameStr);
+		// A failed synchronous native start must not leave the UI locked in
+		// "connecting", or leak a stale card into the next connection.
+		g_connected = false;
+		g_openvAdmissionCard.Clear();
+		g_openvUIRequestNonce.clear();
+		g_connectNonce.clear();
+		PostOpenVConnectionEvent("openvConnectClosed", uiNonce, "native_start_failed");
+		return false;
 	}
 	return true;
 }
