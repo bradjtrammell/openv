@@ -201,7 +201,7 @@
       accepted: token => progress('accepted', token),
       progress: token => progress('connecting', token),
       transport, nativeStage, probed, requestCancel, terminating,
-      failed: token => terminating(token),
+      failed: token => matching(token) && (!pending.cancellationRequested || pending.terminal) && terminating(token),
       rejected: token => matching(token) && !pending.cancellationRequested && release('rejected'),
       closed: token => matching(token) && release('closed'),
       dispose: () => release('disposed'),
