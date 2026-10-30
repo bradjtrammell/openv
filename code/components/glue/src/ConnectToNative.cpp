@@ -1178,13 +1178,22 @@ static InitFunction initFunction([] ()
 			const std::string nonce = arg ? ToNarrow(arg) : std::string();
 			if (!openv::connection::ValidNonce(nonce) || !g_connected ||
 				nonce != g_openvUIRequestNonce || !netLibrary) return;
-			// A stale frame cannot terminate a newer or legacy connection.
-			g_openvUIRequestNonce.clear();
+			// Retain the nonce and connection latch until Cfx reports IDLE.
+			// Disconnect may be asynchronous; a premature terminal event would
+			// unlock the UI while native transport remains alive.
 			g_openvAdmissionCard.Clear();
-			g_connected = false;
 			if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 			netLibrary->Disconnect();
-			PostOpenVConnectionEvent("openvConnectClosed", nonce, "user_disconnect");
+			// OnStateChanged normally publishes closure. Cover already-IDLE
+			// without posting a duplicate terminal event.
+			if (g_connected && g_openvUIRequestNonce == nonce &&
+				netLibrary->GetConnectionState() == NetLibrary::CS_IDLE)
+			{
+				g_connected = false;
+				g_cardConnectionToken.clear();
+				g_openvUIRequestNonce.clear();
+				PostOpenVConnectionEvent("openvConnectClosed", nonce, "user_disconnect");
+			}
 		}
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{

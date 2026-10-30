@@ -90,7 +90,7 @@
         return { ok: false, reason: 'invalid' };
       const token = nonce();
       if (!token) return { ok: false, reason: 'crypto' };
-      const request = { id: ++sequence, address, token, phase: 'requested', timer: null, timerEpoch: 0 };
+      const request = { id: ++sequence, address, token, phase: 'requested', timer: null, timerEpoch: 0, cancellationRequested: false };
       pending = request;
       if (!arm(request, WAIT_MS, () => checkNative(request))) {
         pending = null;
@@ -108,8 +108,8 @@
     }
     function progress(phase, token) {
       if (!matching(token)) return false;
-      if (pending.phase === 'transport' || pending.phase === 'cancel_requested' ||
-          pending.phase.startsWith('native_')) return true;
+      if (pending.cancellationRequested) return false;
+      if (pending.phase === 'transport' || pending.phase.startsWith('native_')) return true;
       pending.phase = phase;
       publish(phase, pending.address);
       const request = pending;
@@ -118,7 +118,8 @@
     }
     function transport(token) {
       if (!matching(token)) return false;
-      if (pending.phase === 'cancel_requested' || pending.phase.startsWith('native_')) return true;
+      if (pending.cancellationRequested) return false;
+      if (pending.phase.startsWith('native_')) return true;
       clear(pending);
       pending.phase = 'transport';
       publish('transport', pending.address);
@@ -126,7 +127,7 @@
     }
     function nativeStage(token, stage) {
       if (!matching(token) || !Object.prototype.hasOwnProperty.call(NATIVE_STAGES, stage) ||
-          pending.phase === 'cancel_requested') return false;
+          pending.cancellationRequested) return false;
       const request = pending;
       const phase = NATIVE_STAGES[stage];
       if (request.phase === 'native_active' && phase !== 'native_active') return false;
@@ -143,6 +144,8 @@
     function probed(token, state) {
       if (!matching(token) || !['active', 'pending', 'absent', 'other'].includes(state)) return false;
       if (state === 'absent' || state === 'other') return release('closed');
+      // A live or pending probe cannot undo a sent disconnect; wait for native closure.
+      if (pending.cancellationRequested) return true;
       if (state === 'active') {
         clear(pending);
         if (pending.phase !== 'cancel_requested') {
@@ -166,6 +169,7 @@
       try { sent = dispatch(request.token) === true; } catch (_) { /* bridge failed */ }
       if (pending !== request) return sent;
       if (!sent) { unconfirmed(request); return false; }
+      request.cancellationRequested = true;
       request.phase = 'cancel_requested';
       publish('cancel_requested', request.address);
       if (!arm(request, PROBE_MS, () => unconfirmed(request))) unconfirmed(request);
@@ -177,8 +181,8 @@
       accepted: token => progress('accepted', token),
       progress: token => progress('connecting', token),
       transport, nativeStage, probed, requestCancel,
-      failed: token => matching(token) && release('failed'),
-      rejected: token => matching(token) && release('rejected'),
+      failed: token => matching(token) && !pending.cancellationRequested && release('failed'),
+      rejected: token => matching(token) && !pending.cancellationRequested && release('rejected'),
       closed: token => matching(token) && release('closed'),
       dispose: () => release('disposed'),
     });

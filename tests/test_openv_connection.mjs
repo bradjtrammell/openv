@@ -218,4 +218,60 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.closed(token), true);
   assert.equal(c.active(), false);
 }
+
+{
+  // A timed-out native disconnect remains irrevocable until verified closure.
+  let counter = 0;
+  const { coordinator: c, timers, changes } = fixture({
+    getRandomValues(bytes) { bytes.fill(++counter); return bytes; },
+  });
+  const old = '01'.repeat(16), next = '02'.repeat(16);
+  let cancellations = 0;
+  assert.equal(c.start('first.example:30120', () => true).ok, true);
+  assert.equal(c.nativeStage(old, 'connected'), true);
+  assert.equal(c.requestCancel(() => { cancellations++; return true; }), true);
+  for (const stage of ['initializing', 'connected', 'active'])
+    assert.equal(c.nativeStage(old, stage), false);
+  assert.equal(c.accepted(old), false);
+  assert.equal(c.progress(old), false);
+  assert.equal(c.transport(old), false);
+  assert.equal(c.failed(old), false);
+  assert.equal(c.rejected(old), false);
+  assert.equal(c.probed(old, 'active'), true);
+  assert.equal(c.probed(old, 'pending'), true);
+  assert.equal(changes.at(-1).phase, 'cancel_requested');
+  timers.values().next().value();
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.nativeStage(old, 'active'), false);
+  assert.equal(c.progress(old), false);
+  assert.equal(c.failed(old), false);
+  assert.equal(c.rejected(old), false);
+  assert.equal(c.probed(old, 'active'), true);
+  assert.equal(c.probed(old, 'pending'), true);
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.start('second.example:30120', () => true).reason, 'busy');
+  assert.equal(c.requestCancel(() => { cancellations++; return true; }), true);
+  assert.equal(cancellations, 2, 'unconfirmed cancellation may be retried');
+  assert.equal(c.probed(old, 'absent'), true);
+  assert.equal(c.active(), false);
+  assert.equal(timers.size, 0);
+  assert.equal(c.start('second.example:30120', () => true).ok, true);
+  assert.equal(c.closed(old), false, 'stale closure cannot release new nonce');
+  assert.equal(c.owns(next), true);
+}
+{
+  // Failed retry must not clear an earlier successful cancellation intent.
+  const { coordinator: c, timers, changes } = fixture();
+  const nonce = 'ab'.repeat(16);
+  assert.equal(c.start('game.example:30120', () => true).ok, true);
+  assert.equal(c.requestCancel(() => true), true);
+  timers.values().next().value();
+  assert.equal(c.requestCancel(() => false), false);
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.nativeStage(nonce, 'active'), false);
+  assert.equal(c.failed(nonce), false);
+  assert.equal(c.probed(nonce, 'other'), true);
+  assert.equal(c.active(), false);
+}
+
 console.log('PASS: native connection coordination, nonce, duplicate fencing, phase-fenced timers, native stage order and failure recovery');
