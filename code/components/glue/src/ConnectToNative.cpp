@@ -1139,10 +1139,10 @@ static InitFunction initFunction([] ()
 		{
 			const std::string nonce = arg ? ToNarrow(arg) : std::string();
 			if (!openv::connection::ValidNonce(nonce)) return;
-			const char* state = !g_connected ? "absent" :
-				(nonce != g_openvUIRequestNonce ? "other" :
-				(netLibrary && openv::connection::NativeTransportActive(
-					static_cast<int>(netLibrary->GetConnectionState())) ? "active" : "pending"));
+			const char* state = openv::connection::NativeProbeState(
+				g_connected, netLibrary != nullptr,
+				netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1,
+				nonce == g_openvUIRequestNonce);
 			const auto reply = nlohmann::json::object({ { "type", "openvConnectionProbe" },
 				{ "nonce", nonce }, { "state", state } });
 			nui::PostFrameMessage("mpMenu", reply.dump());

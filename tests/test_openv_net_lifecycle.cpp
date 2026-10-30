@@ -36,6 +36,17 @@ int main()
     assert(!IsCurrentLibrary(nullptr, &first));
     assert(!IsCurrentLibrary(&first, nullptr));
     assert(!IsCurrentLibrary(nullptr, nullptr));
+    using openv::connection::NativeProbeState;
+    assert(std::string_view(NativeProbeState(false, false, -1, false)) == "absent");
+    assert(std::string_view(NativeProbeState(false, true, 0, true)) == "absent");
+    assert(std::string_view(NativeProbeState(true, true, 0, true)) == "absent");
+    assert(std::string_view(NativeProbeState(false, true, 8, true)) == "pending");
+    assert(std::string_view(NativeProbeState(false, true, 6, false)) == "pending");
+    assert(std::string_view(NativeProbeState(true, true, -1, true)) == "pending");
+    assert(std::string_view(NativeProbeState(true, true, 9, true)) == "pending");
+    assert(std::string_view(NativeProbeState(true, true, 8, false)) == "other");
+    assert(std::string_view(NativeProbeState(true, true, 8, true)) == "active");
+    assert(std::string_view(NativeProbeState(true, true, 7, true)) == "pending");
     int starts = 0;
     assert(openv::connection::DispatchNativeStart([&] { ++starts; }));
     assert(starts == 1);

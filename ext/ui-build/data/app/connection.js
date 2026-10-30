@@ -60,6 +60,15 @@
         return true;
       } catch (_) { return false; }
     }
+    function checkCancellation(request) {
+      if (pending !== request || !request.cancellationRequested) return;
+      // Continue probing after the first timeout; a native disconnect can be
+      // asynchronous, and a single lost probe must not strand the UI forever.
+      request.phase = 'unconfirmed';
+      publish('unconfirmed', request.address);
+      if (!arm(request, PROBE_MS, () => checkCancellation(request))) return;
+      try { probe(request.token); } catch (_) { /* retry on the next probe */ }
+    }
     function unconfirmed(request) {
       if (pending !== request) return;
       request.phase = 'unconfirmed';
@@ -172,7 +181,7 @@
       request.cancellationRequested = true;
       request.phase = 'cancel_requested';
       publish('cancel_requested', request.address);
-      if (!arm(request, PROBE_MS, () => unconfirmed(request))) unconfirmed(request);
+      if (!arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);
       return true;
     }
     return Object.freeze({

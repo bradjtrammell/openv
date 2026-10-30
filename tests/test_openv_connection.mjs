@@ -274,4 +274,26 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.active(), false);
 }
 
+
+{
+  // A disconnect with no native terminal event must keep probing, not stop
+  // forever after one timeout. A later IDLE observation releases the gate.
+  const { coordinator: c, timers, changes, probes } = fixture();
+  const nonce = 'ab'.repeat(16);
+  assert.equal(c.start('game.example:30120', () => true).ok, true);
+  assert.equal(c.requestCancel(() => true), true);
+  for (let i = 0; i < 4; i++) {
+    timers.values().next().value();
+    assert.equal(changes.at(-1).phase, 'unconfirmed');
+    assert.equal(probes.length, i + 1);
+    assert.equal(probes.at(-1), nonce);
+    assert.equal(c.probed(nonce, 'pending'), true);
+    assert.equal(timers.size, 1, 'cancel polling must remain armed');
+    assert.equal(c.nativeStage(nonce, 'active'), false);
+  }
+  assert.equal(c.probed(nonce, 'absent'), true);
+  assert.equal(timers.size, 0);
+  assert.equal(c.active(), false);
+}
+
 console.log('PASS: native connection coordination, nonce, duplicate fencing, phase-fenced timers, native stage order and failure recovery');
