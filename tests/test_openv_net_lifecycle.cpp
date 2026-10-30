@@ -36,6 +36,12 @@ int main()
     assert(!IsCurrentLibrary(nullptr, &first));
     assert(!IsCurrentLibrary(&first, nullptr));
     assert(!IsCurrentLibrary(nullptr, nullptr));
+    using openv::connection::NativeClosureConfirmed;
+    assert(NativeClosureConfirmed(false, -1));
+    assert(NativeClosureConfirmed(false, 8));
+    assert(NativeClosureConfirmed(true, 0));
+    for (int state : {-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1000})
+        assert(!NativeClosureConfirmed(true, state));
     using openv::connection::NativeProbeState;
     assert(std::string_view(NativeProbeState(false, false, -1, false)) == "absent");
     assert(std::string_view(NativeProbeState(false, true, 0, true)) == "absent");

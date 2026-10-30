@@ -99,7 +99,7 @@
         return { ok: false, reason: 'invalid' };
       const token = nonce();
       if (!token) return { ok: false, reason: 'crypto' };
-      const request = { id: ++sequence, address, token, phase: 'requested', timer: null, timerEpoch: 0, cancellationRequested: false };
+      const request = { id: ++sequence, address, token, phase: 'requested', timer: null, timerEpoch: 0, cancellationRequested: false, terminal: false };
       pending = request;
       if (!arm(request, WAIT_MS, () => checkNative(request))) {
         pending = null;
@@ -171,6 +171,17 @@
       if (!arm(request, PROBE_MS, () => checkNative(request))) unconfirmed(request);
       return true;
     }
+    function terminating(token) {
+      if (!matching(token)) return false;
+      const request = pending;
+      if (request.terminal) return true;
+      request.terminal = true;
+      request.cancellationRequested = true;
+      request.phase = 'native_closing';
+      publish('native_closing', request.address);
+      if (!arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);
+      return true;
+    }
     function requestCancel(dispatch) {
       if (!pending || typeof dispatch !== 'function' || pending.phase === 'cancel_requested') return false;
       const request = pending;
@@ -189,8 +200,8 @@
       owns: token => matching(token),
       accepted: token => progress('accepted', token),
       progress: token => progress('connecting', token),
-      transport, nativeStage, probed, requestCancel,
-      failed: token => matching(token) && !pending.cancellationRequested && release('failed'),
+      transport, nativeStage, probed, requestCancel, terminating,
+      failed: token => terminating(token),
       rejected: token => matching(token) && !pending.cancellationRequested && release('rejected'),
       closed: token => matching(token) && release('closed'),
       dispose: () => release('disposed'),

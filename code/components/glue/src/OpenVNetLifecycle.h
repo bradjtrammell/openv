@@ -46,12 +46,18 @@ inline bool IsCurrentLibrary(const void* event_library, const void* current_libr
     return event_library != nullptr && event_library == current_library;
 }
 
+// An error callback does not prove the asynchronous Cfx teardown finished.
+inline bool NativeClosureConfirmed(bool has_library, int native_state) noexcept
+{
+    return !has_library || native_state == 0;
+}
+
 // Probe native transport state, not only the UI connection latch. Error paths
 // may clear the latch before Cfx has completed asynchronous teardown.
 // Unknown native states fail closed until an authoritative IDLE is observed.
 inline const char* NativeProbeState(bool connected, bool has_library, int native_state, bool owns_nonce) noexcept
 {
-    if (!has_library || native_state == 0) return "absent";
+    if (NativeClosureConfirmed(has_library, native_state)) return "absent";
     if (!NativeStageName(native_state) || !connected) return "pending";
     if (!owns_nonce) return "other";
     return NativeTransportActive(native_state) ? "active" : "pending";

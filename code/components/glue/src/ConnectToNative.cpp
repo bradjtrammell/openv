@@ -239,6 +239,29 @@ static_assert(NetLibrary::CS_IDLE == 0 && NetLibrary::CS_INITING == 1 &&
     NetLibrary::CS_CONNECTING == 6 && NetLibrary::CS_CONNECTED == 7 &&
     NetLibrary::CS_ACTIVE == 8, "OpenV NetLibrary stage mapping changed");
 
+// Preserve the request nonce and latch until NetLibrary actually reaches IDLE.
+// An error, build switch or cancellation callback can precede native teardown.
+static void FinishOpenVConnectionIfIdle(const char* reason)
+{
+    const auto nonce = g_openvUIRequestNonce;
+    g_openvAdmissionCard.Clear();
+    g_cardConnectionToken.clear();
+    const bool idle = openv::connection::NativeClosureConfirmed(
+        netLibrary != nullptr,
+        netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1);
+    if (!idle)
+    {
+        if (openv::connection::ValidNonce(nonce))
+            PostOpenVConnectionEvent("openvDisconnectPending", nonce, reason);
+        return;
+    }
+    g_connected = false;
+    g_openvUIRequestNonce.clear();
+    g_connectNonce.clear();
+    if (openv::connection::ValidNonce(nonce))
+        PostOpenVConnectionEvent("openvConnectClosed", nonce, reason);
+}
+
 static void UpdatePendingAuthPayload();
 
 static void SetNickname(const std::string& name)
@@ -331,13 +354,8 @@ static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 	});
 	if (!dispatched)
 	{
-		// A failed synchronous native start must not leave the UI locked in
-		// "connecting", or leak a stale card into the next connection.
-		g_connected = false;
-		g_openvAdmissionCard.Clear();
-		g_openvUIRequestNonce.clear();
-		g_connectNonce.clear();
-		PostOpenVConnectionEvent("openvConnectClosed", uiNonce, "native_start_failed");
+		// A synchronous failure may have partially initialized NetLibrary.
+		FinishOpenVConnectionIfIdle("native_start_failed");
 		return false;
 	}
 	return true;
@@ -629,13 +647,7 @@ static InitFunction initFunction([] ()
 			{
 				if (g_connected && netLibrary &&
 					netLibrary->GetConnectionState() == NetLibrary::CS_IDLE)
-				{
-					g_connected = false;
-					g_openvAdmissionCard.Clear();
-					g_cardConnectionToken.clear();
-					g_openvUIRequestNonce.clear();
-					PostOpenVConnectionEvent("openvConnectClosed", nonce, "native_idle");
-				}
+					FinishOpenVConnectionIfIdle("native_idle");
 				return;
 			}
 			if (!g_connected) return;
@@ -702,10 +714,7 @@ static InitFunction initFunction([] ()
 		{
 			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			InitializeBuildSwitch(build, pureLevel, std::move(poolSizesIncreaseSetting), defaultBuild);
-			g_connected = false;
-			g_openvAdmissionCard.Clear();
-			PostOpenVConnectionEvent("openvConnectClosed", g_openvUIRequestNonce, "build_switch");
-			g_openvUIRequestNonce.clear();
+			FinishOpenVConnectionIfIdle("build_switch");
 		});
 
 		netLibrary->OnConnectionErrorRichEvent.Connect([lib] (const std::string& errorOrig, const std::string& metaData)
@@ -725,10 +734,7 @@ static InitFunction initFunction([] ()
 
 			console::Printf("no_console", "OnConnectionError: %s\n", error);
 
-			g_connected = false;
-			g_openvAdmissionCard.Clear();
 			const auto failedNonce = g_openvUIRequestNonce;
-			g_openvUIRequestNonce.clear();
 
 			rapidjson::Document document;
 			document.SetString(error.c_str(), document.GetAllocator());
@@ -739,6 +745,7 @@ static InitFunction initFunction([] ()
 			document.Accept(writer);
 
 			nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "connectFailed", "message": %s, "extra": %s, "nonce": %s })", sbuffer.GetString(), metaData, nlohmann::json(failedNonce).dump()));
+			FinishOpenVConnectionIfIdle("connection_error");
 
 			ep.Call("connectionError", error);
 		});
@@ -788,9 +795,7 @@ static InitFunction initFunction([] ()
 				g_openvAdmissionCard.Clear();
 				if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 				netLibrary->Disconnect();
-				g_connected = false;
-				g_openvUIRequestNonce.clear();
-				PostOpenVConnectionEvent("openvConnectClosed", nonce, "admission_card_unavailable");
+				FinishOpenVConnectionIfIdle("admission_card_unavailable");
 				return;
 			}
 			const auto message = nlohmann::json::object({
@@ -854,12 +859,7 @@ static InitFunction initFunction([] ()
 
 	OnKillNetwork.Connect([](const char*)
 	{
-		g_connected = false;
-		g_openvAdmissionCard.Clear();
-		g_cardConnectionToken.clear();
-		PostOpenVConnectionEvent("openvConnectClosed", g_openvUIRequestNonce, "network_closed");
-		g_openvUIRequestNonce.clear();
-
+		FinishOpenVConnectionIfIdle("network_closed");
 		SetShellIcon("");
 	});
 
@@ -1186,14 +1186,8 @@ static InitFunction initFunction([] ()
 			netLibrary->Disconnect();
 			// OnStateChanged normally publishes closure. Cover already-IDLE
 			// without posting a duplicate terminal event.
-			if (g_connected && g_openvUIRequestNonce == nonce &&
-				netLibrary->GetConnectionState() == NetLibrary::CS_IDLE)
-			{
-				g_connected = false;
-				g_cardConnectionToken.clear();
-				g_openvUIRequestNonce.clear();
-				PostOpenVConnectionEvent("openvConnectClosed", nonce, "user_disconnect");
-			}
+			if (g_connected && g_openvUIRequestNonce == nonce)
+				FinishOpenVConnectionIfIdle("user_disconnect");
 		}
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{
@@ -1202,11 +1196,7 @@ static InitFunction initFunction([] ()
 				netLibrary->CancelDeferredConnection();
 			}
 			netLibrary->Disconnect();
-
-			g_connected = false;
-			g_openvAdmissionCard.Clear();
-			PostOpenVConnectionEvent("openvConnectClosed", g_openvUIRequestNonce, "deferred_cancel");
-			g_openvUIRequestNonce.clear();
+			FinishOpenVConnectionIfIdle("deferred_cancel");
 		}
 		else if (_wcsicmp(type, L"executeCommand") == 0)
 		{

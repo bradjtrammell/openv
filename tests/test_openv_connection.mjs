@@ -38,9 +38,12 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.failed(undefined), false);
   const stale = timers.values().next().value;
   assert.equal(c.failed('ab'.repeat(16)), true);
+  assert.equal(c.active(), true, 'failure callback does not prove native IDLE');
+  assert.equal(changes.at(-1).phase, 'native_closing');
+  assert.equal(c.probed('ab'.repeat(16), 'absent'), true);
   assert.equal(c.active(), false);
   assert.equal(timers.size, 0);
-  assert.equal(changes.at(-1).phase, 'failed');
+  assert.equal(changes.at(-1).phase, 'closed');
   assert.equal(c.start('other.example:30120', () => true).ok, true);
   stale(); // stale timer from prior native attempt must not unlock the replacement
   assert.equal(c.active(), true);
@@ -296,4 +299,52 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.active(), false);
 }
 
-console.log('PASS: native connection coordination, nonce, duplicate fencing, phase-fenced timers, native stage order and failure recovery');
+{
+  // A native error precedes IDLE: duplicate/stale events cannot revive it.
+  const { coordinator: c, timers, changes, probes } = fixture();
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('play.example:30120', () => true).ok, true);
+  const stale = timers.values().next().value;
+  assert.equal(c.nativeStage(token, 'connecting'), true);
+  assert.equal(c.terminating(token), true);
+  assert.equal(changes.at(-1).phase, 'native_closing');
+  assert.equal(c.failed(token), true, 'duplicate failure is idempotent');
+  stale();
+  assert.equal(changes.at(-1).phase, 'native_closing');
+  assert.equal(c.start('second.example:30120', () => true).reason, 'busy');
+  assert.equal(c.nativeStage(token, 'active'), false);
+  assert.equal(c.progress(token), false);
+  assert.equal(c.transport(token), false);
+  assert.equal(c.probed(token, 'active'), true);
+  assert.equal(c.probed(token, 'pending'), true);
+  assert.equal(changes.at(-1).phase, 'native_closing');
+  timers.values().next().value();
+  assert.equal(probes.at(-1), token);
+  assert.equal(c.active(), true);
+  assert.equal(c.requestCancel(() => true), true, 'operator can retry disconnect');
+  assert.equal(c.nativeStage(token, 'active'), false);
+  assert.equal(c.probed(token, 'absent'), true);
+  assert.equal(c.active(), false);
+  assert.equal(timers.size, 0);
+  assert.equal(c.start('second.example:30120', () => true).ok, true);
+  assert.equal(c.terminating('ff'.repeat(16)), false);
+}
+{
+  // A failed watchdog cannot authorize a replacement request.
+  let count = 0;
+  const states = [];
+  const c = create({
+    crypto: { getRandomValues(bytes) { bytes.fill(0xab); return bytes; } },
+    schedule() { if (++count === 1) return 1; throw Error('timer failure'); },
+    cancel() {}, onChange(s) { states.push(s); }, probe() { return true; },
+  });
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('a:1', () => true).ok, true);
+  assert.equal(c.terminating(token), true);
+  assert.equal(c.active(), true);
+  assert.equal(states.at(-1).phase, 'unconfirmed');
+  assert.equal(c.nativeStage(token, 'active'), false);
+  assert.equal(c.closed(token), true);
+  assert.equal(c.active(), false);
+}
+console.log('PASS: native connection coordination, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');

@@ -76,12 +76,13 @@
       native_connecting: 'Native client is establishing the Cfx network session.',
       native_connected: 'Cfx network transport connected. Gameplay admission is not yet verified.',
       unconfirmed: 'Native state is unconfirmed. Connect remains locked until native closure is confirmed.',
+      native_closing: 'Native connection is ending. Waiting for Cfx to confirm transport shutdown.',
       cancel_requested: 'Disconnect requested. Waiting for native closure confirmation.',
       dispatch_failed: 'The native client could not accept the connection request.',
       disposed: 'Connection UI was closed.',
     };
     status.textContent = messages[phase] || messages.idle;
-    if (!pending || phase === 'cancel_requested') admission.dismiss();
+    if (!pending || phase === 'cancel_requested' || phase === 'native_closing') admission.dismiss();
     const submit = document.querySelector('#connect-form button[type="submit"]');
     if (submit) submit.disabled = pending;
     const disconnect = document.getElementById('connection-cancel');
@@ -370,6 +371,9 @@
       case 'openvNativeStage':
         connection.nativeStage(message.nonce, message.stage);
         break;
+      case 'openvDisconnectPending':
+        connection.terminating(message.nonce);
+        break;
       case 'openvConnectClosed':
         if (connection.closed(message.nonce)) toast(message.reason === 'native_start_failed'
           ? 'The game network runtime failed to start the connection. You can retry.'
@@ -384,7 +388,7 @@
         break;
       case 'connectFailed':
         if (connection.failed(message.nonce) && typeof message.message === 'string')
-          toast(`Connection failed: ${message.message}`);
+          toast(`Connection failed: ${message.message}. Waiting for native transport shutdown.`);
         break;
       case 'connecting':
         if (connection.progress(message.nonce)) toast('Connecting to server…');
