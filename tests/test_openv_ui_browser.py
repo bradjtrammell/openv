@@ -312,14 +312,16 @@ class BrowserUITests(unittest.TestCase):
         self.page.evaluate("(nonce) => window.postMessage({type:'openvTransportConnected',nonce},'*')", old)
         self.assertIn('not yet verified', self.page.locator('#connection-state').inner_text())
         self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", old)
-        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
         self.page.locator('#connect-form button[type=submit]').click()
         new = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
         self.assertNotEqual(new, old)
         self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Stale'},'*')", old)
         self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectRejected',nonce,reason:'busy'},'*')", new)
-        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        # postMessage queues a browser task; do not race its dispatch with a
+        # synchronous Playwright disabled-state read.
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
 
     def test_native_disconnect_requires_confirmation_and_matching_ack(self):
         self.load()
