@@ -1100,9 +1100,10 @@ static InitFunction initFunction([] ()
 		{
 			std::string hostName = ToNarrow(arg);
 			std::string uiNonce;
-			// First-party NUI sends [endpoint, 128-bit request nonce]. Preserve
-			// the legacy raw endpoint path for inherited native callers.
-			if (!hostName.empty() && hostName.front() == '[')
+			// First-party NUI sends [endpoint, 128-bit request nonce].
+			// A raw legacy IPv6 address also starts with '[', but never has
+			// JSON quotes. Preserve its direct native connection path.
+			if (openv::connection::IsStructuredConnectEnvelope(hostName))
 			{
 				try
 				{
@@ -1120,6 +1121,10 @@ static InitFunction initFunction([] ()
 					return;
 				}
 			}
+			// A malformed bracketed legacy endpoint must not be sent to
+			// NetLibrary as an opaque host string.
+			if (!hostName.empty() && hostName.front() == '[' &&
+				!openv::connection::ValidEndpoint(hostName)) return;
 			if (ConnectTo(hostName, true, "", uiNonce)) lastHostName = hostName;
 		}
 		else if (!_wcsicmp(type, L"openvConnectionProbe"))

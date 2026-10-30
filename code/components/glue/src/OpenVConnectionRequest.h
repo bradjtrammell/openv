@@ -101,4 +101,16 @@ inline bool ValidEndpoint(std::string_view endpoint)
     }
     return true;
 }
+/*
+ * Bracketed IPv6 literals and JSON connection envelopes both begin with '['.
+ * Only a JSON string array contains quotes; a raw IPv6 endpoint never does.
+ * Preserve legacy direct IPv6 connections while requiring the first-party
+ * NUI envelope to pass strict JSON, nonce and endpoint validation.
+ */
+inline bool IsStructuredConnectEnvelope(std::string_view input)
+{
+    return !input.empty() && input.front() == '[' &&
+        input.find('"') != std::string_view::npos;
+}
+
 }

@@ -18,5 +18,12 @@ int main()
     assert(ValidPort("1") && ValidPort("65535"));
     assert(!ValidPort("0") && !ValidPort("65536") && !ValidPort("12a"));
     assert(!ValidEndpoint(std::string(256, 'a')));
-    std::cout << "PASS: OpenV native connection request endpoint, port and nonce validation\n";
+    using openv::connection::IsStructuredConnectEnvelope;
+    assert(IsStructuredConnectEnvelope(R"(["[::1]:30120","0123456789abcdef0123456789abcdef"])"));
+    assert(IsStructuredConnectEnvelope(R"([ "[2001:db8::1]:30120", "0123456789abcdef0123456789abcdef" ])"));
+    assert(!IsStructuredConnectEnvelope("[::1]:30120"));
+    assert(!IsStructuredConnectEnvelope("[2001:db8::1]:30120"));
+    assert(!IsStructuredConnectEnvelope("[::1]"));
+    assert(!IsStructuredConnectEnvelope("play.example.org:30120"));
+    std::cout << "PASS: OpenV native connection request endpoint, port, nonce and IPv6 envelope routing\n";
 }
