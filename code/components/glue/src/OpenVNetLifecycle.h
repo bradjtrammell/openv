@@ -28,13 +28,22 @@ inline bool NativeTransportActive(int state)
 {
     return state == 8;
 }
-// NUI may initialize before the native NetLibrary is constructed. Do not
-// publish an accepted request or dereference an unavailable transport.
+// NUI may initialize before the native NetLibrary is constructed. Likewise,
+// the UI latch may have been cleared by an error while Cfx is still tearing
+// down its previous transport. A new request is safe only at native IDLE.
 enum class NativeStartReadiness { ready, busy, unavailable };
-inline NativeStartReadiness CheckNativeStart(bool connected, bool has_library) noexcept
+inline NativeStartReadiness CheckNativeStart(bool connected, bool has_library, int native_state) noexcept
 {
     if (connected) return NativeStartReadiness::busy;
-    return has_library ? NativeStartReadiness::ready : NativeStartReadiness::unavailable;
+    if (!has_library || !NativeStageName(native_state)) return NativeStartReadiness::unavailable;
+    return native_state == 0 ? NativeStartReadiness::ready : NativeStartReadiness::busy;
+}
+
+// A callback registered on an obsolete NetLibrary must never close or mutate
+// the nonce, admission card or progress of a replacement native transport.
+inline bool IsCurrentLibrary(const void* event_library, const void* current_library) noexcept
+{
+    return event_library != nullptr && event_library == current_library;
 }
 
 // A synchronous transport exception must not strand the connection latch.

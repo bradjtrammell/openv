@@ -290,7 +290,8 @@ static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 		}
 	}
 
-	const auto readiness = openv::connection::CheckNativeStart(g_connected, netLibrary != nullptr);
+	const auto readiness = openv::connection::CheckNativeStart(g_connected, netLibrary != nullptr,
+		netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1);
 	if (readiness != openv::connection::NativeStartReadiness::ready)
 	{
 		const char* reason = readiness == openv::connection::NativeStartReadiness::busy
@@ -619,8 +620,9 @@ static InitFunction initFunction([] ()
 		netLibrary = lib;
 
 		// Report actual Cfx native stages; a transport session is not gameplay authorization.
-		netLibrary->OnStateChanged.Connect([](NetLibrary::ConnectionState state, NetLibrary::ConnectionState)
+		netLibrary->OnStateChanged.Connect([lib](NetLibrary::ConnectionState state, NetLibrary::ConnectionState)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			const auto nonce = g_openvUIRequestNonce;
 			if (!openv::connection::ValidNonce(nonce)) return;
 			if (state == NetLibrary::CS_IDLE)
@@ -687,16 +689,18 @@ static InitFunction initFunction([] ()
 			}
 		});
 
-		netLibrary->OnConnectOKReceived.Connect([](NetAddress)
+		netLibrary->OnConnectOKReceived.Connect([lib](NetAddress)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			PostOpenVConnectionEvent("openvTransportConnected", g_openvUIRequestNonce);
 			auto peerAddress = netLibrary->GetCurrentPeer().ToString();
 
 			nui::PostRootMessage(fmt::sprintf(R"({ "type": "setServerAddress", "data": "%s" })", peerAddress));
 		});
 
-		netLibrary->OnRequestBuildSwitch.Connect([](int build, int pureLevel, std::wstring poolSizesIncreaseSetting, int defaultBuild)
+		netLibrary->OnRequestBuildSwitch.Connect([lib](int build, int pureLevel, std::wstring poolSizesIncreaseSetting, int defaultBuild)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			InitializeBuildSwitch(build, pureLevel, std::move(poolSizesIncreaseSetting), defaultBuild);
 			g_connected = false;
 			g_openvAdmissionCard.Clear();
@@ -704,8 +708,9 @@ static InitFunction initFunction([] ()
 			g_openvUIRequestNonce.clear();
 		});
 
-		netLibrary->OnConnectionErrorRichEvent.Connect([] (const std::string& errorOrig, const std::string& metaData)
+		netLibrary->OnConnectionErrorRichEvent.Connect([lib] (const std::string& errorOrig, const std::string& metaData)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			std::string error = errorOrig;
 
 			if ((strstr(error.c_str(), "steam") || strstr(error.c_str(), "Steam")) && !strstr(error.c_str(), ".ms/verify"))
@@ -738,8 +743,9 @@ static InitFunction initFunction([] ()
 			ep.Call("connectionError", error);
 		});
 
-		netLibrary->OnConnectionProgress.Connect([] (const std::string& message, int progress, int totalProgress, bool cancelable)
+		netLibrary->OnConnectionProgress.Connect([lib] (const std::string& message, int progress, int totalProgress, bool cancelable)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			console::Printf("no_console", "OnConnectionProgress: %s\n", message);
 
 			rapidjson::Document document;
@@ -763,8 +769,9 @@ static InitFunction initFunction([] ()
 			ep.Call("connectionProgress", message, progress, totalProgress);
 		});
 
-		netLibrary->OnConnectionCardPresent.Connect([](const std::string& card, const std::string& token)
+		netLibrary->OnConnectionCardPresent.Connect([lib](const std::string& card, const std::string& token)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			// Never expose the private Cfx card response token to the UI.
 			// Each card belongs to one live, nonce-bound native connection.
 			if (!openv::connection::ValidNonce(g_openvUIRequestNonce))
@@ -793,8 +800,9 @@ static InitFunction initFunction([] ()
 			nui::PostFrameMessage("mpMenu", message.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace));
 		});
 
-		netLibrary->OnStateChanged.Connect([](NetLibrary::ConnectionState currentState, NetLibrary::ConnectionState previousState)
+		netLibrary->OnStateChanged.Connect([lib](NetLibrary::ConnectionState currentState, NetLibrary::ConnectionState previousState)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			ep.Call("connectionStateChanged", (int)currentState, (int)previousState);
 		});
 

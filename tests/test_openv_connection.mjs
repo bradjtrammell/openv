@@ -199,4 +199,23 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(changes.at(-1).phase, 'cancel_requested');
   assert.equal(c.closed(second), true);
 }
-console.log('PASS: native connection coordination, nonce, duplicate fencing, timeout, stale callbacks and failure recovery');
+{
+  const { coordinator: c, timers, changes } = fixture();
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('play.example:30120', () => true).ok, true);
+  const staleRequested = timers.values().next().value;
+  assert.equal(c.accepted(token), true);
+  staleRequested(); // canceled callback from this same request must not restart probe
+  assert.equal(changes.at(-1).phase, 'accepted');
+  assert.equal(c.nativeStage(token, 'connected'), true);
+  assert.equal(c.nativeStage(token, 'downloading'), false);
+  assert.equal(changes.at(-1).phase, 'native_connected');
+  const staleConnected = timers.values().next().value;
+  assert.equal(c.requestCancel(() => true), true);
+  staleConnected(); // a queued pre-cancel timeout cannot undo cancellation
+  assert.equal(changes.at(-1).phase, 'cancel_requested');
+  assert.equal(c.active(), true);
+  assert.equal(c.closed(token), true);
+  assert.equal(c.active(), false);
+}
+console.log('PASS: native connection coordination, nonce, duplicate fencing, phase-fenced timers, native stage order and failure recovery');

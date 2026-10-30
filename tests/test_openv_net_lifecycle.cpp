@@ -21,10 +21,21 @@ int main()
     assert(!openv::connection::NativeTransportActive(-1));
     using openv::connection::NativeStartReadiness;
     using openv::connection::CheckNativeStart;
-    assert(CheckNativeStart(false, true) == NativeStartReadiness::ready);
-    assert(CheckNativeStart(false, false) == NativeStartReadiness::unavailable);
-    assert(CheckNativeStart(true, true) == NativeStartReadiness::busy);
-    assert(CheckNativeStart(true, false) == NativeStartReadiness::busy);
+    assert(CheckNativeStart(false, true, 0) == NativeStartReadiness::ready);
+    assert(CheckNativeStart(false, false, 0) == NativeStartReadiness::unavailable);
+    assert(CheckNativeStart(true, true, 0) == NativeStartReadiness::busy);
+    assert(CheckNativeStart(true, false, 0) == NativeStartReadiness::busy);
+    for (int state = 1; state <= 8; ++state)
+        assert(CheckNativeStart(false, true, state) == NativeStartReadiness::busy);
+    for (int state : {-1, 9, 1000})
+        assert(CheckNativeStart(false, true, state) == NativeStartReadiness::unavailable);
+    int first = 1, second = 2;
+    using openv::connection::IsCurrentLibrary;
+    assert(IsCurrentLibrary(&first, &first));
+    assert(!IsCurrentLibrary(&first, &second));
+    assert(!IsCurrentLibrary(nullptr, &first));
+    assert(!IsCurrentLibrary(&first, nullptr));
+    assert(!IsCurrentLibrary(nullptr, nullptr));
     int starts = 0;
     assert(openv::connection::DispatchNativeStart([&] { ++starts; }));
     assert(starts == 1);

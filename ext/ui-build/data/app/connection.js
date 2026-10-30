@@ -13,6 +13,10 @@
     connected: 'native_connected',
     active: 'native_active',
   });
+  const NATIVE_ORDER = Object.freeze({
+    initializing: 1, handshake: 2, downloading: 3, download_complete: 4,
+    fetching: 5, connecting: 6, connected: 7, active: 8,
+  });
   function create({ crypto, schedule, cancel, onChange, probe }) {
     if (![schedule, cancel, onChange, probe].every(fn => typeof fn === 'function'))
       throw new TypeError('Invalid connection coordinator');
@@ -22,6 +26,8 @@
       onChange(Object.freeze({ phase, address, pending: pending !== null }));
     }
     function clear(request) {
+      // Invalidate even a callback already queued before clearTimeout.
+      request.timerEpoch += 1;
       if (request.timer !== null) {
         try { cancel(request.timer); } catch (_) { /* disposed */ }
         request.timer = null;
@@ -37,13 +43,19 @@
     }
     function arm(request, ms, callback) {
       clear(request);
+      const epoch = request.timerEpoch;
       try {
         const timer = schedule(() => {
-          if (pending !== request) return;
+          if (pending !== request || request.timerEpoch !== epoch) return;
           request.timer = null;
+          request.timerEpoch += 1; // A timer callback is single-use.
           callback();
         }, ms);
         if (timer === false || timer == null) throw Error('timer unavailable');
+        if (request.timerEpoch !== epoch) {
+          try { cancel(timer); } catch (_) { /* callback already ran */ }
+          return false;
+        }
         request.timer = timer;
         return true;
       } catch (_) { return false; }
@@ -54,7 +66,7 @@
       publish('unconfirmed', request.address);
     }
     function checkNative(request) {
-      if (pending !== request || request.phase === 'transport' || request.phase === 'native_active') return;
+      if (pending !== request || request.phase === 'transport' || request.phase === 'native_active' || request.phase === 'cancel_requested') return;
       request.phase = 'checking';
       publish('checking', request.address);
       if (!arm(request, PROBE_MS, () => unconfirmed(request))) {
@@ -78,7 +90,7 @@
         return { ok: false, reason: 'invalid' };
       const token = nonce();
       if (!token) return { ok: false, reason: 'crypto' };
-      const request = { id: ++sequence, address, token, phase: 'requested', timer: null };
+      const request = { id: ++sequence, address, token, phase: 'requested', timer: null, timerEpoch: 0 };
       pending = request;
       if (!arm(request, WAIT_MS, () => checkNative(request))) {
         pending = null;
@@ -118,6 +130,10 @@
       const request = pending;
       const phase = NATIVE_STAGES[stage];
       if (request.phase === 'native_active' && phase !== 'native_active') return false;
+      const previous = request.phase.startsWith('native_') ?
+        request.phase.slice('native_'.length) : '';
+      if (Object.prototype.hasOwnProperty.call(NATIVE_ORDER, previous) &&
+          NATIVE_ORDER[stage] < NATIVE_ORDER[previous]) return false;
       request.phase = phase;
       publish(phase, request.address);
       if (phase === 'native_active') clear(request);
