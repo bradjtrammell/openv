@@ -35,7 +35,8 @@ int main()
     assert(!card.Take(nonce, code, result, start + 60s));
     assert(result == "unchanged");
     assert(!card.Active(nonce, start));
-    assert(card.Arm(nonce, "native-private-token"));
+    assert(!card.Arm(nonce, "native-private-token")); // expired native token cannot be revived
+    assert(card.Arm(nonce, "native-private-token-2"));
     assert(card.Active(nonce));
     assert(!card.Active(other));
     assert(!card.Take(other, code, result));
@@ -43,7 +44,7 @@ int main()
     assert(!card.Take(nonce, "invalid", result));
     assert(card.Active(nonce));
     assert(card.Take(nonce, code, result));
-    assert(result == "native-private-token");
+    assert(result == "native-private-token-2");
     assert(!card.Active(nonce));
     assert(!card.Take(nonce, code, result));
     assert(card.Arm(other, "new-token"));

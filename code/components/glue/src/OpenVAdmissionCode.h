@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 namespace openv::admission
 {
 inline bool ValidCode(std::string_view code)
@@ -26,12 +27,19 @@ class CardSession
 public:
     using Clock = std::chrono::steady_clock;
     static constexpr auto SubmissionWindow = std::chrono::seconds(60);
+    // One native connection cannot accumulate unlimited private Cfx tokens.
+    static constexpr std::size_t MaxCardsPerConnection = 32;
 private:
+    struct CardRecord
+    {
+        std::string nonce;
+        std::string token;
+        bool consumed = false;
+    };
+    std::vector<CardRecord> history_;
     std::string nonce_;
     std::string token_;
     Clock::time_point armed_at_{};
-    std::string consumed_nonce_;
-    std::string consumed_token_;
     void ResetPending()
     {
         nonce_.clear();
@@ -42,17 +50,21 @@ public:
     bool Arm(std::string_view nonce, std::string_view token, Clock::time_point now = Clock::now())
     {
         if (!connection::ValidNonce(nonce) || token.empty() || token.size() > 1024) return false;
-        // Native Cfx can redeliver the same card while the UI is reloading.
-        // A replay never extends its original deadline or replaces its token.
         if (!token_.empty())
         {
             if (now < armed_at_) return false;
+            // Duplicate native delivery is idempotent only while the original
+            // deadline is live. Expired cards must never get a fresh 60s lease.
             if (now - armed_at_ < SubmissionWindow)
                 return nonce_ == nonce && token_ == token;
             ResetPending();
         }
-        // A consumed response token cannot authorize a second submission.
-        if (consumed_nonce_ == nonce && consumed_token_ == token) return false;
+        // Keep consumed AND expired tokens fenced until the native connection
+        // is closed. A second card must not evict an older replay tombstone.
+        for (const auto& record : history_)
+            if (record.nonce == nonce && record.token == token) return false;
+        if (history_.size() >= MaxCardsPerConnection) return false;
+        history_.push_back({std::string(nonce), std::string(token), false});
         nonce_.assign(nonce.data(), nonce.size());
         token_.assign(token.data(), token.size());
         armed_at_ = now;
@@ -60,7 +72,9 @@ public:
     }
     bool WasConsumed(std::string_view nonce, std::string_view token) const
     {
-        return !consumed_token_.empty() && consumed_nonce_ == nonce && consumed_token_ == token;
+        for (const auto& record : history_)
+            if (record.consumed && record.nonce == nonce && record.token == token) return true;
+        return false;
     }
     bool Active(std::string_view nonce, Clock::time_point now = Clock::now()) const
     {
@@ -82,17 +96,22 @@ public:
             if (!token_.empty() && (now < armed_at_ || now - armed_at_ >= SubmissionWindow)) ResetPending();
             return false;
         }
-        consumed_nonce_ = nonce_;
-        consumed_token_ = token_;
-        token = std::move(token_);
-        ResetPending();
-        return true;
+        for (auto& record : history_)
+        {
+            if (record.nonce == nonce_ && record.token == token_ && !record.consumed)
+            {
+                record.consumed = true;
+                token = std::move(token_);
+                ResetPending();
+                return true;
+            }
+        }
+        return false;
     }
     void Clear()
     {
         ResetPending();
-        consumed_nonce_.clear();
-        consumed_token_.clear();
+        history_.clear();
     }
 };
 }

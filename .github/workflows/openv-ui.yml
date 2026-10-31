@@ -23,6 +23,7 @@ on:
       - 'tests/test_openv_connection_request.cpp'
       - 'tests/test_openv_admission_code.cpp'
       - 'tests/test_openv_admission_recovery.cpp'
+      - 'tests/test_openv_admission_history.cpp'
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'code/components/glue/src/OpenVAdmissionCode.h'
@@ -52,6 +53,7 @@ on:
       - 'tests/test_openv_connection_request.cpp'
       - 'tests/test_openv_admission_code.cpp'
       - 'tests/test_openv_admission_recovery.cpp'
+      - 'tests/test_openv_admission_history.cpp'
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'code/components/glue/src/OpenVAdmissionCode.h'
@@ -85,6 +87,8 @@ jobs:
           /tmp/openv-admission-test
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_recovery.cpp -o /tmp/openv-admission-recovery-test
           /tmp/openv-admission-recovery-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_history.cpp -o /tmp/openv-admission-history-test
+          /tmp/openv-admission-history-test
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_net_lifecycle.cpp -o /tmp/openv-net-lifecycle-test
           /tmp/openv-net-lifecycle-test
       - name: Compile and run actual C++17 connection contract with MSVC
@@ -106,6 +110,9 @@ jobs:
           $recovery = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_recovery.cpp /Fe:openv-admission-recovery-test.exe && openv-admission-recovery-test.exe'
           & cmd.exe /d /c $recovery
           if ($LASTEXITCODE -ne 0) { throw 'Native admission replay and CEF recovery contract failed' }
+          $history = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_history.cpp /Fe:openv-admission-history-test.exe && openv-admission-history-test.exe'
+          & cmd.exe /d /c $history
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission history and deadline contract failed' }
           $lifecycle = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_net_lifecycle.cpp /Fe:openv-net-lifecycle-test.exe && openv-net-lifecycle-test.exe'
           & cmd.exe /d /c $lifecycle
           if ($LASTEXITCODE -ne 0) { throw 'Native NetLibrary lifecycle contract failed' }

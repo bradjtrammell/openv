@@ -17,7 +17,8 @@ int main() {
     assert(card.RemainingMs(nonce,t+59s)==1000);
     assert(!card.Arm(nonce,"token-a",t-1ms)); // backward time is not an extension
     assert(!card.Active(nonce,t+60s));
-    assert(card.Arm(nonce,"token-b",t+60s)); // expired cards may be replaced
+    assert(!card.Arm(nonce,"token-a",t+60s)); // expired replay cannot renew deadline
+    assert(card.Arm(nonce,"token-b",t+60s)); // fresh card may replace expired
     assert(card.RemainingMs(nonce,t+61s)==59000);
     std::string taken;
     assert(card.Take(nonce,code,taken,t+61s));
