@@ -794,6 +794,9 @@ static InitFunction initFunction([] ()
 			}
 			g_cardConnectionToken.clear();
 			const auto nonce = g_openvUIRequestNonce;
+			// Native duplicate delivery after a successful submission is inert.
+			// It must neither rearm the consumed token nor disconnect the player.
+			if (g_openvAdmissionCard.WasConsumed(nonce, token)) return;
 			if (!g_connected || card.empty() || card.size() > 4096 ||
 				(g_openvAdmissionCard.Active(nonce) && !g_openvCardMarkup.empty() &&
 					g_openvCardMarkup != card) ||

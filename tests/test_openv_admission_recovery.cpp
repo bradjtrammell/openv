@@ -22,8 +22,12 @@ int main() {
     std::string taken;
     assert(card.Take(nonce,code,taken,t+61s));
     assert(taken=="token-b");
+    assert(card.WasConsumed(nonce,"token-b"));
+    assert(!card.WasConsumed(other,"token-b"));
+    assert(!card.WasConsumed(nonce,"token-c"));
     assert(!card.Arm(nonce,"token-b",t+62s)); // consumed native token cannot be replayed
     assert(card.Arm(nonce,"token-c",t+62s));
     card.Clear();
+    assert(!card.WasConsumed(nonce,"token-b"));
     assert(card.Arm(nonce,"token-b",t+63s)); // new connection resets replay fence
 }

@@ -58,6 +58,10 @@ public:
         armed_at_ = now;
         return true;
     }
+    bool WasConsumed(std::string_view nonce, std::string_view token) const
+    {
+        return !consumed_token_.empty() && consumed_nonce_ == nonce && consumed_token_ == token;
+    }
     bool Active(std::string_view nonce, Clock::time_point now = Clock::now()) const
     {
         return !token_.empty() && nonce_ == nonce && now >= armed_at_ && now - armed_at_ < SubmissionWindow;
