@@ -13,7 +13,7 @@ SOURCE = (Path(__file__).resolve().parents[1] /
 
 class NativeAdmissionRouteTests(unittest.TestCase):
     def test_only_join_code_submits_to_netlibrary(self):
-        self.assertEqual(len(re.findall(r"netLibrary->SubmitCardResponse\\s*\\(", SOURCE)), 1)
+        self.assertEqual(len(re.findall(r"netLibrary->SubmitCardResponse\s*\(", SOURCE)), 1)
         self.assertIn("g_openvAdmissionCard.Take(nonce, code, cardToken)", SOURCE)
         self.assertIn('nlohmann::json::object({ { "join_code", code } })', SOURCE)
         self.assertNotIn("g_cardConnectionToken", SOURCE)
