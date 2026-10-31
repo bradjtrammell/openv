@@ -50,6 +50,9 @@ int main()
     card.Clear();
     assert(!card.Take(other, code, result));
     assert(card.Arm(nonce, "old-token"));
+    assert(!card.Arm(other, "new-token"));
+    assert(card.Active(nonce));
+    card.Clear();
     assert(card.Arm(other, "new-token"));
     assert(!card.Take(nonce, code, result));
     assert(card.Take(other, code, result));

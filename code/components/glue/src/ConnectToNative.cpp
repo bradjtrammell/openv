@@ -794,7 +794,9 @@ static InitFunction initFunction([] ()
 			}
 			g_cardConnectionToken.clear();
 			const auto nonce = g_openvUIRequestNonce;
-			if (!g_connected || !nui::HasMainUI() || card.empty() || card.size() > 4096 ||
+			if (!g_connected || card.empty() || card.size() > 4096 ||
+				(g_openvAdmissionCard.Active(nonce) && !g_openvCardMarkup.empty() &&
+					g_openvCardMarkup != card) ||
 				!g_openvAdmissionCard.Arm(nonce, token))
 			{
 				ClearOpenVAdmissionCard();
@@ -803,12 +805,23 @@ static InitFunction initFunction([] ()
 				FinishOpenVConnectionIfIdle("admission_card_unavailable");
 				return;
 			}
+			// Cache the bounded public card even while CEF is unavailable. The
+			// connection snapshot will replay it with the ORIGINAL native deadline.
 			g_openvCardMarkup = card;
-			const auto message = nlohmann::json::object({
-				{ "type", "connectCard" }, { "nonce", nonce },
-				{ "data", nlohmann::json::object({ { "card", card } }) }
-			});
-			nui::PostFrameMessage("mpMenu", message.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace));
+			if (nui::HasMainUI())
+			{
+				const auto remaining = g_openvAdmissionCard.RemainingMs(nonce);
+				if (remaining > 0)
+				{
+					const auto message = nlohmann::json::object({
+						{ "type", "connectCard" }, { "nonce", nonce },
+						{ "remainingMs", remaining },
+						{ "data", nlohmann::json::object({ { "card", card } }) }
+					});
+					nui::PostFrameMessage("mpMenu", message.dump(-1, ' ', false,
+						nlohmann::detail::error_handler_t::replace));
+				}
+			}
 		});
 
 		netLibrary->OnStateChanged.Connect([lib](NetLibrary::ConnectionState currentState, NetLibrary::ConnectionState previousState)

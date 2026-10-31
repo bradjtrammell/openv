@@ -25,6 +25,9 @@ on:
       - 'tests/test_openv_connection.mjs'
       - 'tests/test_openv_admission.mjs'
       - 'tests/test_openv_admission_replay.mjs'
+      - 'tests/test_openv_admission_recovery.cpp'
+      - 'code/components/glue/src/OpenVAdmissionCode.h'
+      - 'code/components/glue/src/ConnectToNative.cpp'
       - 'tests/test_openv_runtime_audit.py'
 concurrency:
   group: openv-windows-client-${{ github.ref }}
@@ -84,6 +87,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'OpenV native root JavaScript failed syntax check' }
           node --check ext/ui-build/loadscreen-fallback/code.js
           if ($LASTEXITCODE -ne 0) { throw 'OpenV source-only loadscreen JavaScript failed syntax check' }
+      - name: Verify native admission replay and CEF recovery contract
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
+          if (-not $installation) { throw 'Visual Studio not found' }
+          $vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+          $command = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_recovery.cpp /Fe:openv-admission-recovery-test.exe && openv-admission-recovery-test.exe'
+          & cmd.exe /d /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission replay contract failed' }
       - name: Test native connection lifecycle
         run: |
           node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs tests/test_openv_admission_replay.mjs

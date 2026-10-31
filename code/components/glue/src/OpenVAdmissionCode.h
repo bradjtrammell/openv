@@ -30,11 +30,29 @@ private:
     std::string nonce_;
     std::string token_;
     Clock::time_point armed_at_{};
+    std::string consumed_nonce_;
+    std::string consumed_token_;
+    void ResetPending()
+    {
+        nonce_.clear();
+        token_.clear();
+        armed_at_ = Clock::time_point{};
+    }
 public:
     bool Arm(std::string_view nonce, std::string_view token, Clock::time_point now = Clock::now())
     {
-        Clear();
         if (!connection::ValidNonce(nonce) || token.empty() || token.size() > 1024) return false;
+        // Native Cfx can redeliver the same card while the UI is reloading.
+        // A replay never extends its original deadline or replaces its token.
+        if (!token_.empty())
+        {
+            if (now < armed_at_) return false;
+            if (now - armed_at_ < SubmissionWindow)
+                return nonce_ == nonce && token_ == token;
+            ResetPending();
+        }
+        // A consumed response token cannot authorize a second submission.
+        if (consumed_nonce_ == nonce && consumed_token_ == token) return false;
         nonce_.assign(nonce.data(), nonce.size());
         token_.assign(token.data(), token.size());
         armed_at_ = now;
@@ -57,13 +75,20 @@ public:
     {
         if (!Active(nonce, now) || !ValidCode(code))
         {
-            if (!token_.empty() && (now < armed_at_ || now - armed_at_ >= SubmissionWindow)) Clear();
+            if (!token_.empty() && (now < armed_at_ || now - armed_at_ >= SubmissionWindow)) ResetPending();
             return false;
         }
+        consumed_nonce_ = nonce_;
+        consumed_token_ = token_;
         token = std::move(token_);
-        Clear();
+        ResetPending();
         return true;
     }
-    void Clear() { nonce_.clear(); token_.clear(); armed_at_ = Clock::time_point{}; }
+    void Clear()
+    {
+        ResetPending();
+        consumed_nonce_.clear();
+        consumed_token_.clear();
+    }
 };
 }
