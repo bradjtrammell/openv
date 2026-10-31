@@ -27,6 +27,8 @@ on:
       - 'tests/test_openv_admission_replay.mjs'
       - 'tests/test_openv_admission_recovery.cpp'
       - 'tests/test_openv_admission_history.cpp'
+      - 'tests/test_openv_admission_watchdog.cpp'
+      - 'tests/test_openv_native_admission_route.py'
       - 'code/components/glue/src/OpenVAdmissionCode.h'
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'tests/test_openv_runtime_audit.py'
@@ -101,6 +103,13 @@ jobs:
           $history = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_history.cpp /Fe:openv-admission-history-test.exe && openv-admission-history-test.exe'
           & cmd.exe /d /c $history
           if ($LASTEXITCODE -ne 0) { throw 'Native admission history and deadline contract failed' }
+          $watchdog = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_watchdog.cpp /Fe:openv-admission-watchdog-test.exe && openv-admission-watchdog-test.exe'
+          & cmd.exe /d /c $watchdog
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission watchdog contract failed' }
+      - name: Verify native-only admission submission and watchdog wiring
+        run: |
+          python -m unittest discover -s tests -p test_openv_native_admission_route.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission route verification failed' }
       - name: Test native connection lifecycle
         run: |
           node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs tests/test_openv_admission_replay.mjs

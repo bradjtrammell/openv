@@ -80,6 +80,15 @@ public:
     {
         return !token_.empty() && nonce_ == nonce && now >= armed_at_ && now - armed_at_ < SubmissionWindow;
     }
+    // A native frame watchdog must retire cards even if CEF never reloads.
+    // Backward steady-clock observations fail closed.
+    bool Expired(Clock::time_point now = Clock::now()) const
+    {
+        return !token_.empty() && (now < armed_at_ || now - armed_at_ >= SubmissionWindow);
+    }
+    // Keep consumed and expired token tombstones until the native transport
+    // actually reaches IDLE; callbacks can race with Disconnect().
+    void DropPending() { ResetPending(); }
     // CEF reloads cannot reset the original 60-second native card deadline.
     uint32_t RemainingMs(std::string_view nonce, Clock::time_point now = Clock::now()) const
     {

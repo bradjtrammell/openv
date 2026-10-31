@@ -24,6 +24,8 @@ on:
       - 'tests/test_openv_admission_code.cpp'
       - 'tests/test_openv_admission_recovery.cpp'
       - 'tests/test_openv_admission_history.cpp'
+      - 'tests/test_openv_admission_watchdog.cpp'
+      - 'tests/test_openv_native_admission_route.py'
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'code/components/glue/src/OpenVAdmissionCode.h'
@@ -54,6 +56,8 @@ on:
       - 'tests/test_openv_admission_code.cpp'
       - 'tests/test_openv_admission_recovery.cpp'
       - 'tests/test_openv_admission_history.cpp'
+      - 'tests/test_openv_admission_watchdog.cpp'
+      - 'tests/test_openv_native_admission_route.py'
       - 'code/components/glue/src/ConnectToNative.cpp'
       - 'code/components/glue/src/OpenVConnectionRequest.h'
       - 'code/components/glue/src/OpenVAdmissionCode.h'
@@ -89,6 +93,8 @@ jobs:
           /tmp/openv-admission-recovery-test
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_history.cpp -o /tmp/openv-admission-history-test
           /tmp/openv-admission-history-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_watchdog.cpp -o /tmp/openv-admission-watchdog-test
+          /tmp/openv-admission-watchdog-test
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_net_lifecycle.cpp -o /tmp/openv-net-lifecycle-test
           /tmp/openv-net-lifecycle-test
       - name: Compile and run actual C++17 connection contract with MSVC
@@ -113,6 +119,9 @@ jobs:
           $history = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_history.cpp /Fe:openv-admission-history-test.exe && openv-admission-history-test.exe'
           & cmd.exe /d /c $history
           if ($LASTEXITCODE -ne 0) { throw 'Native admission history and deadline contract failed' }
+          $watchdog = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_watchdog.cpp /Fe:openv-admission-watchdog-test.exe && openv-admission-watchdog-test.exe'
+          & cmd.exe /d /c $watchdog
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission watchdog contract failed' }
           $lifecycle = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_net_lifecycle.cpp /Fe:openv-net-lifecycle-test.exe && openv-net-lifecycle-test.exe'
           & cmd.exe /d /c $lifecycle
           if ($LASTEXITCODE -ne 0) { throw 'Native NetLibrary lifecycle contract failed' }
@@ -142,6 +151,8 @@ jobs:
           node --check ext/ui-build/data/app/admission.js
           node --check ext/ui-build/data/root.js
           node --check ext/ui-build/loadscreen-fallback/code.js
+      - name: Verify native-only admission submission and watchdog wiring
+        run: python -m unittest discover -s tests -p test_openv_native_admission_route.py -v
       - name: Run native connection lifecycle regressions
         run: node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs tests/test_openv_admission_replay.mjs
       - name: Run archive and security tests
