@@ -17,6 +17,20 @@ on:
       - 'ext/ui-build/loadscreen/**'
       - 'ext/ui-build/loadscreen-fallback/**'
       - 'tests/test_openv_ui.py'
+      - 'tests/test_openv_connection.mjs'
+      - 'tests/test_openv_admission.mjs'
+      - 'tests/test_openv_admission_replay.mjs'
+      - 'tests/test_openv_connection_request.cpp'
+      - 'tests/test_openv_admission_code.cpp'
+      - 'tests/test_openv_admission_recovery.cpp'
+      - 'tests/test_openv_admission_history.cpp'
+      - 'tests/test_openv_admission_watchdog.cpp'
+      - 'tests/test_openv_native_admission_route.py'
+      - 'code/components/glue/src/ConnectToNative.cpp'
+      - 'code/components/glue/src/OpenVConnectionRequest.h'
+      - 'code/components/glue/src/OpenVAdmissionCode.h'
+      - 'code/components/glue/src/OpenVNetLifecycle.h'
+      - 'tests/test_openv_net_lifecycle.cpp'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   pull_request:
@@ -35,12 +49,82 @@ on:
       - 'ext/ui-build/loadscreen/**'
       - 'ext/ui-build/loadscreen-fallback/**'
       - 'tests/test_openv_ui.py'
+      - 'tests/test_openv_connection.mjs'
+      - 'tests/test_openv_admission.mjs'
+      - 'tests/test_openv_admission_replay.mjs'
+      - 'tests/test_openv_connection_request.cpp'
+      - 'tests/test_openv_admission_code.cpp'
+      - 'tests/test_openv_admission_recovery.cpp'
+      - 'tests/test_openv_admission_history.cpp'
+      - 'tests/test_openv_admission_watchdog.cpp'
+      - 'tests/test_openv_native_admission_route.py'
+      - 'code/components/glue/src/ConnectToNative.cpp'
+      - 'code/components/glue/src/OpenVConnectionRequest.h'
+      - 'code/components/glue/src/OpenVAdmissionCode.h'
+      - 'code/components/glue/src/OpenVNetLifecycle.h'
+      - 'tests/test_openv_net_lifecycle.cpp'
       - 'tests/test_openv_runtime_audit.py'
       - 'tests/test_openv_ui_browser.py'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  native-connection-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - name: Compile and run actual C++17 connection contract on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_connection_request.cpp -o /tmp/openv-connection-test
+          /tmp/openv-connection-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_code.cpp -o /tmp/openv-admission-test
+          /tmp/openv-admission-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_recovery.cpp -o /tmp/openv-admission-recovery-test
+          /tmp/openv-admission-recovery-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_history.cpp -o /tmp/openv-admission-history-test
+          /tmp/openv-admission-history-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_admission_watchdog.cpp -o /tmp/openv-admission-watchdog-test
+          /tmp/openv-admission-watchdog-test
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Icode/components/glue/src tests/test_openv_net_lifecycle.cpp -o /tmp/openv-net-lifecycle-test
+          /tmp/openv-net-lifecycle-test
+      - name: Compile and run actual C++17 connection contract with MSVC
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
+          if (-not $installation) { throw 'Visual Studio not found' }
+          $vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw 'MSVC environment not found' }
+          $command = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_connection_request.cpp /Fe:openv-connection-test.exe && openv-connection-test.exe'
+          & cmd.exe /d /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Native connection contract failed' }
+          $admission = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_code.cpp /Fe:openv-admission-test.exe && openv-admission-test.exe'
+          & cmd.exe /d /c $admission
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission card contract failed' }
+          $recovery = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_recovery.cpp /Fe:openv-admission-recovery-test.exe && openv-admission-recovery-test.exe'
+          & cmd.exe /d /c $recovery
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission replay and CEF recovery contract failed' }
+          $history = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_history.cpp /Fe:openv-admission-history-test.exe && openv-admission-history-test.exe'
+          & cmd.exe /d /c $history
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission history and deadline contract failed' }
+          $watchdog = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_admission_watchdog.cpp /Fe:openv-admission-watchdog-test.exe && openv-admission-watchdog-test.exe'
+          & cmd.exe /d /c $watchdog
+          if ($LASTEXITCODE -ne 0) { throw 'Native admission watchdog contract failed' }
+          $lifecycle = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /W4 /WX /EHsc /Icode\components\glue\src tests\test_openv_net_lifecycle.cpp /Fe:openv-net-lifecycle-test.exe && openv-net-lifecycle-test.exe'
+          & cmd.exe /d /c $lifecycle
+          if ($LASTEXITCODE -ne 0) { throw 'Native NetLibrary lifecycle contract failed' }
   source-ui:
     strategy:
       fail-fast: false
@@ -63,8 +147,14 @@ jobs:
         run: |
           set -euo pipefail
           node --check ext/ui-build/data/app/app.js
+          node --check ext/ui-build/data/app/connection.js
+          node --check ext/ui-build/data/app/admission.js
           node --check ext/ui-build/data/root.js
           node --check ext/ui-build/loadscreen-fallback/code.js
+      - name: Verify native-only admission submission and watchdog wiring
+        run: python -m unittest discover -s tests -p test_openv_native_admission_route.py -v
+      - name: Run native connection lifecycle regressions
+        run: node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs tests/test_openv_admission_replay.mjs
       - name: Run archive and security tests
         run: python -m unittest discover -s tests -p test_openv_ui.py -v
       - name: Run Windows runtime and PE parser regression tests
@@ -129,7 +219,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
   browser-ui:
-    runs-on: ubuntu-latest
+    # Playwright 1.57.0 does not support Ubuntu 26.04 (ubuntu-latest as of Oct 2026).
+    # Pin a supported runner so Chromium installs and the actual DOM tests execute.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5

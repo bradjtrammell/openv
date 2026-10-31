@@ -6,6 +6,9 @@
  */
 
 #include "StdInc.h"
+#include "OpenVConnectionRequest.h"
+#include "OpenVAdmissionCode.h"
+#include "OpenVNetLifecycle.h"
 
 #include <CfxLocale.h>
 #include <CefOverlay.h>
@@ -79,8 +82,22 @@ inline auto& GetEarlyGameFrame()
 
 std::string g_lastConn;
 static std::string g_connectNonce;
+static std::string g_openvUIRequestNonce;
+static openv::admission::CardSession g_openvAdmissionCard;
+static std::string g_openvCardMarkup; // bounded public card, never its private token
+static void ClearOpenVAdmissionCard()
+{
+    g_openvAdmissionCard.Clear();
+    g_openvCardMarkup.clear();
+}
 
-extern bool XBR_InterceptCardResponse(const nlohmann::json& j);
+static void PostOpenVConnectionEvent(const char* type, const std::string& nonce, const char* reason = "")
+{
+	if (nonce.empty()) return;
+	const auto message = nlohmann::json::object({ { "type", type }, { "nonce", nonce }, { "reason", reason } });
+	nui::PostFrameMessage("mpMenu", message.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace));
+}
+
 extern bool XBR_InterceptCancelDefer();
 
 static LONG WINAPI TerminateInstantly(LPEXCEPTION_POINTERS pointers)
@@ -221,6 +238,37 @@ void loadSettings() {
 NetLibrary* netLibrary;
 static bool g_connected;
 
+static_assert(NetLibrary::CS_IDLE == 0 && NetLibrary::CS_INITING == 1 &&
+    NetLibrary::CS_INITRECEIVED == 2 && NetLibrary::CS_DOWNLOADING == 3 &&
+    NetLibrary::CS_DOWNLOADCOMPLETE == 4 && NetLibrary::CS_FETCHING == 5 &&
+    NetLibrary::CS_CONNECTING == 6 && NetLibrary::CS_CONNECTED == 7 &&
+    NetLibrary::CS_ACTIVE == 8, "OpenV NetLibrary stage mapping changed");
+
+// Preserve the request nonce and latch until NetLibrary actually reaches IDLE.
+// An error, build switch or cancellation callback can precede native teardown.
+static void FinishOpenVConnectionIfIdle(const char* reason)
+{
+    const auto nonce = g_openvUIRequestNonce;
+    // Retain replay tombstones while Disconnect() is still in progress.
+    g_openvAdmissionCard.DropPending();
+    g_openvCardMarkup.clear();
+    const bool idle = openv::connection::NativeClosureConfirmed(
+        netLibrary != nullptr,
+        netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1);
+    if (!idle)
+    {
+        if (openv::connection::ValidNonce(nonce))
+            PostOpenVConnectionEvent("openvDisconnectPending", nonce, reason);
+        return;
+    }
+    ClearOpenVAdmissionCard();
+    g_connected = false;
+    g_openvUIRequestNonce.clear();
+    g_connectNonce.clear();
+    if (openv::connection::ValidNonce(nonce))
+        PostOpenVConnectionEvent("openvConnectClosed", nonce, reason);
+}
+
 static void UpdatePendingAuthPayload();
 
 static void SetNickname(const std::string& name)
@@ -246,7 +294,7 @@ static void SetNickname(const std::string& name)
 	UpdatePendingAuthPayload();
 }
 
-static void ConnectTo(const std::string& hostnameStr, bool fromUI = false, const std::string& connectParams = "")
+static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const std::string& connectParams = "", const std::string& uiNonce = "")
 {
 	auto connectParamsReal = connectParams;
 	static bool switched;
@@ -268,30 +316,56 @@ static void ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 			});
 			nui::PostFrameMessage("mpMenu", j.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace));
 
-			return;
+			return false;
 		}
 	}
 
-	if (g_connected)
+	const auto readiness = openv::connection::CheckNativeStart(g_connected, netLibrary != nullptr,
+		netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1);
+	if (readiness != openv::connection::NativeStartReadiness::ready)
 	{
-		trace("Ignoring ConnectTo because we're already connecting/connected.\n");
-		return;
+		const char* reason = readiness == openv::connection::NativeStartReadiness::busy
+			? "busy" : "native_unavailable";
+		trace("OpenV native connection refused: %s\n", reason);
+		PostOpenVConnectionEvent("openvConnectRejected", uiNonce, reason);
+		return false;
 	}
 
+	ClearOpenVAdmissionCard();
 	g_connected = true;
-
-	nui::PostFrameMessage("mpMenu", R"({ "type": "connecting" })");
-
-	g_lastConn = hostnameStr;
-
-	if (!hostnameStr.empty() && hostnameStr[0] == '-')
+	if (!uiNonce.empty())
 	{
-		netLibrary->ConnectToServer("cfx.re/join/" + hostnameStr.substr(1));
+		g_connectNonce = uiNonce;
+		g_openvUIRequestNonce = uiNonce;
+		PostOpenVConnectionEvent("openvConnectAccepted", uiNonce);
+		PostOpenVConnectionEvent("connecting", uiNonce);
 	}
 	else
 	{
-		netLibrary->ConnectToServer(hostnameStr);
+		g_openvUIRequestNonce.clear();
+		nui::PostFrameMessage("mpMenu", R"({ "type": "connecting" })");
 	}
+
+	g_lastConn = hostnameStr;
+
+	const bool dispatched = openv::connection::DispatchNativeStart([&]()
+	{
+		if (!hostnameStr.empty() && hostnameStr[0] == '-')
+		{
+			netLibrary->ConnectToServer("cfx.re/join/" + hostnameStr.substr(1));
+		}
+		else
+		{
+			netLibrary->ConnectToServer(hostnameStr);
+		}
+	});
+	if (!dispatched)
+	{
+		// A synchronous failure may have partially initialized NetLibrary.
+		FinishOpenVConnectionIfIdle("native_start_failed");
+		return false;
+	}
+	return true;
 }
 
 static std::string g_pendingAuthPayload;
@@ -312,8 +386,6 @@ static void HandleAuthPayload(const std::string& payloadStr)
 
 static std::string g_discourseClientId;
 static std::string g_discourseUserToken;
-
-static std::string g_cardConnectionToken;
 
 struct ServerLink
 {
@@ -542,6 +614,19 @@ static InitFunction initFunction([] ()
 			disconnect = false;
 		}
 
+		// Native authorization must time out without depending on CEF timers,
+		// browser reloads, or server callback scheduling.
+		if (g_connected && netLibrary && g_openvAdmissionCard.Expired())
+		{
+			const auto nonce = g_openvUIRequestNonce;
+			g_openvAdmissionCard.DropPending();
+			g_openvCardMarkup.clear();
+			PostOpenVConnectionEvent("openvAdmissionRejected", nonce, "expired");
+			if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
+			netLibrary->Disconnect();
+			FinishOpenVConnectionIfIdle("admission_timeout");
+		}
+
 		ep.RunFrame();
 	});
 
@@ -569,6 +654,28 @@ static InitFunction initFunction([] ()
 	NetLibrary::OnNetLibraryCreate.Connect([] (NetLibrary* lib)
 	{
 		netLibrary = lib;
+
+		// Report actual Cfx native stages; a transport session is not gameplay authorization.
+		netLibrary->OnStateChanged.Connect([lib](NetLibrary::ConnectionState state, NetLibrary::ConnectionState)
+		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
+			const auto nonce = g_openvUIRequestNonce;
+			if (!openv::connection::ValidNonce(nonce)) return;
+			if (state == NetLibrary::CS_IDLE)
+			{
+				if (g_connected && netLibrary &&
+					netLibrary->GetConnectionState() == NetLibrary::CS_IDLE)
+					FinishOpenVConnectionIfIdle("native_idle");
+				return;
+			}
+			if (!g_connected) return;
+			const char* stage = openv::connection::NativeStageName(static_cast<int>(state));
+			if (!stage) return;
+			const auto message = nlohmann::json::object({
+				{ "type", "openvNativeStage" }, { "nonce", nonce }, { "stage", stage }
+			});
+			nui::PostFrameMessage("mpMenu", message.dump());
+		});
 
 		netLibrary->OnInfoBlobReceived.Connect([](std::string_view sv, const std::function<void()>& cb)
 		{
@@ -612,21 +719,25 @@ static InitFunction initFunction([] ()
 			}
 		});
 
-		netLibrary->OnConnectOKReceived.Connect([](NetAddress)
+		netLibrary->OnConnectOKReceived.Connect([lib](NetAddress)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
+			PostOpenVConnectionEvent("openvTransportConnected", g_openvUIRequestNonce);
 			auto peerAddress = netLibrary->GetCurrentPeer().ToString();
 
 			nui::PostRootMessage(fmt::sprintf(R"({ "type": "setServerAddress", "data": "%s" })", peerAddress));
 		});
 
-		netLibrary->OnRequestBuildSwitch.Connect([](int build, int pureLevel, std::wstring poolSizesIncreaseSetting, int defaultBuild)
+		netLibrary->OnRequestBuildSwitch.Connect([lib](int build, int pureLevel, std::wstring poolSizesIncreaseSetting, int defaultBuild)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			InitializeBuildSwitch(build, pureLevel, std::move(poolSizesIncreaseSetting), defaultBuild);
-			g_connected = false;
+			FinishOpenVConnectionIfIdle("build_switch");
 		});
 
-		netLibrary->OnConnectionErrorRichEvent.Connect([] (const std::string& errorOrig, const std::string& metaData)
+		netLibrary->OnConnectionErrorRichEvent.Connect([lib] (const std::string& errorOrig, const std::string& metaData)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			std::string error = errorOrig;
 
 			if ((strstr(error.c_str(), "steam") || strstr(error.c_str(), "Steam")) && !strstr(error.c_str(), ".ms/verify"))
@@ -641,7 +752,7 @@ static InitFunction initFunction([] ()
 
 			console::Printf("no_console", "OnConnectionError: %s\n", error);
 
-			g_connected = false;
+			const auto failedNonce = g_openvUIRequestNonce;
 
 			rapidjson::Document document;
 			document.SetString(error.c_str(), document.GetAllocator());
@@ -651,13 +762,15 @@ static InitFunction initFunction([] ()
 
 			document.Accept(writer);
 
-			nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "connectFailed", "message": %s, "extra": %s })", sbuffer.GetString(), metaData));
+			nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "connectFailed", "message": %s, "extra": %s, "nonce": %s })", sbuffer.GetString(), metaData, nlohmann::json(failedNonce).dump()));
+			FinishOpenVConnectionIfIdle("connection_error");
 
 			ep.Call("connectionError", error);
 		});
 
-		netLibrary->OnConnectionProgress.Connect([] (const std::string& message, int progress, int totalProgress, bool cancelable)
+		netLibrary->OnConnectionProgress.Connect([lib] (const std::string& message, int progress, int totalProgress, bool cancelable)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			console::Printf("no_console", "OnConnectionProgress: %s\n", message);
 
 			rapidjson::Document document;
@@ -666,6 +779,7 @@ static InitFunction initFunction([] ()
 			document.AddMember("count", progress, document.GetAllocator());
 			document.AddMember("total", totalProgress, document.GetAllocator());
 			document.AddMember("cancelable", cancelable, document.GetAllocator());
+			document.AddMember("nonce", rapidjson::Value(g_openvUIRequestNonce.c_str(), g_openvUIRequestNonce.size(), document.GetAllocator()), document.GetAllocator());
 
 			rapidjson::StringBuffer sbuffer;
 			rapidjson::Writer<rapidjson::StringBuffer> writer(sbuffer);
@@ -680,30 +794,62 @@ static InitFunction initFunction([] ()
 			ep.Call("connectionProgress", message, progress, totalProgress);
 		});
 
-		netLibrary->OnConnectionCardPresent.Connect([](const std::string& card, const std::string& token)
+		netLibrary->OnConnectionCardPresent.Connect([lib](const std::string& card, const std::string& token)
 		{
-			g_cardConnectionToken = token;
-
-			rapidjson::Document document;
-			document.SetObject();
-			document.AddMember("card", rapidjson::Value(card.c_str(), card.size(), document.GetAllocator()), document.GetAllocator());
-
-			rapidjson::StringBuffer sbuffer;
-			rapidjson::Writer<rapidjson::StringBuffer> writer(sbuffer);
-
-			document.Accept(writer);
-
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
+			// Never expose the private Cfx card response token to the UI.
+			// Each card belongs to one live, nonce-bound native connection.
+			if (!openv::connection::ValidNonce(g_openvUIRequestNonce))
+			{
+				// Do not retain a legacy bearer or permit a generic CEF card
+				// response to bypass the first-party signed-session flow.
+				ep.Call("connectionError", std::string("Legacy connection cards are unsupported"));
+				if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
+				netLibrary->Disconnect();
+				FinishOpenVConnectionIfIdle("legacy_card_unsupported");
+				return;
+			}
+			const auto nonce = g_openvUIRequestNonce;
+			// Native duplicate delivery after a successful submission is inert.
+			// It must neither rearm the consumed token nor disconnect the player.
+			if (g_openvAdmissionCard.WasConsumed(nonce, token)) return;
+			if (!g_connected || card.empty() || card.size() > 4096 ||
+				(g_openvAdmissionCard.Active(nonce) && !g_openvCardMarkup.empty() &&
+					g_openvCardMarkup != card) ||
+				!g_openvAdmissionCard.Arm(nonce, token))
+			{
+				g_openvAdmissionCard.DropPending();
+				g_openvCardMarkup.clear();
+				if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
+				netLibrary->Disconnect();
+				FinishOpenVConnectionIfIdle("admission_card_unavailable");
+				return;
+			}
+			// Cache the bounded public card even while CEF is unavailable. The
+			// connection snapshot will replay it with the ORIGINAL native deadline.
+			g_openvCardMarkup = card;
 			if (nui::HasMainUI())
 			{
-				nui::PostFrameMessage("mpMenu", fmt::sprintf(R"({ "type": "connectCard", "data": %s })", sbuffer.GetString()));
+				const auto remaining = g_openvAdmissionCard.RemainingMs(nonce);
+				if (remaining > 0)
+				{
+					const auto message = nlohmann::json::object({
+						{ "type", "connectCard" }, { "nonce", nonce },
+						{ "remainingMs", remaining },
+						{ "data", nlohmann::json::object({ { "card", card } }) }
+					});
+					nui::PostFrameMessage("mpMenu", message.dump(-1, ' ', false,
+						nlohmann::detail::error_handler_t::replace));
+				}
 			}
-
-			ep.Call("connectionError", std::string("Cards don't exist here yet!"));
 		});
 
-		netLibrary->OnStateChanged.Connect([](NetLibrary::ConnectionState currentState, NetLibrary::ConnectionState previousState)
+		netLibrary->OnStateChanged.Connect([lib](NetLibrary::ConnectionState currentState, NetLibrary::ConnectionState previousState)
 		{
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
 			ep.Call("connectionStateChanged", (int)currentState, (int)previousState);
+			if (currentState == NetLibrary::CS_IDLE && previousState != NetLibrary::CS_IDLE && g_connected)
+				FinishOpenVConnectionIfIdle("native_idle");
 		});
 
 		static std::function<void()> finishConnectCb;
@@ -754,8 +900,7 @@ static InitFunction initFunction([] ()
 
 	OnKillNetwork.Connect([](const char*)
 	{
-		g_connected = false;
-
+		FinishOpenVConnectionIfIdle("network_closed");
 		SetShellIcon("");
 	});
 
@@ -1003,23 +1148,120 @@ static InitFunction initFunction([] ()
 		else if (!_wcsicmp(type, L"connectTo"))
 		{
 			std::string hostName = ToNarrow(arg);
-
-			try
+			std::string uiNonce;
+			// First-party NUI sends [endpoint, 128-bit request nonce].
+			// A raw legacy IPv6 address also starts with '[', but never has
+			// JSON quotes. Preserve its direct native connection path.
+			if (openv::connection::IsStructuredConnectEnvelope(hostName))
 			{
-				auto j = nlohmann::json::parse(hostName);
-				hostName = j[0].get<std::string>();
-
-				if (j.size() >= 2)
+				try
 				{
-					g_connectNonce = j[1].get<std::string>();
+					const auto request = nlohmann::json::parse(hostName);
+					if (!request.is_array() || request.size() != 2 ||
+						!request[0].is_string() || !request[1].is_string()) return;
+					hostName = request[0].get<std::string>();
+					uiNonce = request[1].get<std::string>();
+				}
+				catch (...) { return; }
+				if (!openv::connection::ValidNonce(uiNonce)) return;
+				if (!openv::connection::ValidEndpoint(hostName))
+				{
+					PostOpenVConnectionEvent("openvConnectRejected", uiNonce, "invalid_endpoint");
+					return;
 				}
 			}
-			catch (...)
+			// A malformed bracketed legacy endpoint must not be sent to
+			// NetLibrary as an opaque host string.
+			if (!hostName.empty() && hostName.front() == '[' &&
+				!openv::connection::ValidEndpoint(hostName)) return;
+			if (ConnectTo(hostName, true, "", uiNonce)) lastHostName = hostName;
+		}
+		else if (!_wcsicmp(type, L"openvConnectionSnapshot"))
+		{
+			// CEF can reload while NetLibrary is still connected. Reattach only
+			// the existing UI nonce; never expose any private bearer or ticket.
+			const char* stage = openv::connection::NativeSnapshotStage(
+				g_connected, openv::connection::ValidNonce(g_openvUIRequestNonce),
+				netLibrary != nullptr,
+				netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1);
+			const auto snapshot = nlohmann::json::object({
+				{ "type", "openvConnectionSnapshot" },
+				{ "nonce", stage ? g_openvUIRequestNonce : "" },
+				{ "address", stage ? g_lastConn : "" },
+				{ "stage", stage ? stage : "absent" }
+			});
+			nui::PostFrameMessage("mpMenu", snapshot.dump(-1, ' ', false,
+				nlohmann::detail::error_handler_t::replace));
+			if (stage && !g_openvCardMarkup.empty())
 			{
+				const auto remaining = g_openvAdmissionCard.RemainingMs(g_openvUIRequestNonce);
+				if (remaining > 0)
+				{
+					const auto restored = nlohmann::json::object({
+						{ "type", "connectCard" }, { "nonce", g_openvUIRequestNonce },
+						{ "remainingMs", remaining },
+						{ "data", nlohmann::json::object({ { "card", g_openvCardMarkup } }) }
+					});
+					nui::PostFrameMessage("mpMenu", restored.dump(-1, ' ', false,
+						nlohmann::detail::error_handler_t::replace));
+				}
+				else ClearOpenVAdmissionCard();
 			}
-
-			lastHostName = hostName;
-			ConnectTo(hostName, true);
+		}
+		else if (!_wcsicmp(type, L"openvConnectionProbe"))
+		{
+			const std::string nonce = arg ? ToNarrow(arg) : std::string();
+			if (!openv::connection::ValidNonce(nonce)) return;
+			const char* state = openv::connection::NativeProbeState(
+				g_connected, netLibrary != nullptr,
+				netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1,
+				nonce == g_openvUIRequestNonce);
+			const auto reply = nlohmann::json::object({ { "type", "openvConnectionProbe" },
+				{ "nonce", nonce }, { "state", state } });
+			nui::PostFrameMessage("mpMenu", reply.dump());
+		}
+		else if (!_wcsicmp(type, L"openvSubmitJoinCode"))
+		{
+			// The server-provided card token is consumed once and never reaches CEF.
+			try
+			{
+				const auto request = nlohmann::json::parse(ToNarrow(arg));
+				if (!request.is_array() || request.size() != 2 ||
+					!request[0].is_string() || !request[1].is_string()) return;
+				const auto nonce = request[0].get<std::string>();
+				const auto code = request[1].get<std::string>();
+				std::string cardToken;
+				if (!g_connected || !netLibrary || nonce != g_openvUIRequestNonce) return;
+				if (!g_openvAdmissionCard.Take(nonce, code, cardToken))
+				{
+					PostOpenVConnectionEvent("openvAdmissionRejected", nonce, "expired_or_invalid");
+					return;
+				}
+				g_openvCardMarkup.clear();
+				const auto response = nlohmann::json::object({ { "join_code", code } });
+				netLibrary->SubmitCardResponse(response.dump(), cardToken);
+				PostOpenVConnectionEvent("openvAdmissionCodeSubmitted", nonce);
+			}
+			catch (const std::exception&)
+			{
+				// Invalid or stale UI payloads cannot authorize a game connection.
+			}
+		}
+		else if (!_wcsicmp(type, L"openvCancelConnect"))
+		{
+			const std::string nonce = arg ? ToNarrow(arg) : std::string();
+			if (!openv::connection::ValidNonce(nonce) || !g_connected ||
+				nonce != g_openvUIRequestNonce || !netLibrary) return;
+			// Retain the nonce and connection latch until Cfx reports IDLE.
+			// Disconnect may be asynchronous; a premature terminal event would
+			// unlock the UI while native transport remains alive.
+			ClearOpenVAdmissionCard();
+			if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
+			netLibrary->Disconnect();
+			// OnStateChanged normally publishes closure. Cover already-IDLE
+			// without posting a duplicate terminal event.
+			if (g_connected && g_openvUIRequestNonce == nonce)
+				FinishOpenVConnectionIfIdle("user_disconnect");
 		}
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{
@@ -1028,8 +1270,7 @@ static InitFunction initFunction([] ()
 				netLibrary->CancelDeferredConnection();
 			}
 			netLibrary->Disconnect();
-
-			g_connected = false;
+			FinishOpenVConnectionIfIdle("deferred_cancel");
 		}
 		else if (_wcsicmp(type, L"executeCommand") == 0)
 		{
@@ -1180,22 +1421,9 @@ static InitFunction initFunction([] ()
 		}
 		else if (!_wcsicmp(type, L"submitCardResponse"))
 		{
-			try
-			{
-				auto json = nlohmann::json::parse(ToNarrow(arg));
-
-				if (!XBR_InterceptCardResponse(json))
-				{
-					if (!g_cardConnectionToken.empty())
-					{
-						netLibrary->SubmitCardResponse(json["data"].dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace), g_cardConnectionToken);
-					}
-				}
-			}
-			catch (const std::exception& e)
-			{
-				trace("failed to set card response: %s\n", e.what());
-			}
+			// Legacy CEF card submission is not an OpenV admission path.
+			// Only openvSubmitJoinCode can consume the native one-time token.
+			trace("OpenV rejected unsupported legacy card response\n");
 		}
 		else if (!_wcsicmp(type, L"setLastServers"))
 		{

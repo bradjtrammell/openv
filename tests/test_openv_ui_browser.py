@@ -42,6 +42,8 @@ class BrowserUITests(unittest.TestCase):
     def load(self, native=True):
         if native:
             self.page.evaluate("window.__calls=[]; window.invokeNative=(action,arg)=>window.__calls.push([action,arg])")
+        self.page.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
+        self.page.add_script_tag(content=(APP / 'admission.js').read_text(encoding='utf-8'))
         self.page.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
 
     def test_first_party_root_native_lifecycle_and_authenticated_dispatch(self):
@@ -81,6 +83,8 @@ class BrowserUITests(unittest.TestCase):
           window.__calls = [];
           window.invokeNative = (action, argument) => window.__calls.push([action, argument]);
         }''')
+        child.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
+        child.add_script_tag(content=(APP / 'admission.js').read_text(encoding='utf-8'))
         child.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
         self.page.evaluate('''() => window.__push('frameCall', 'mpMenu', JSON.stringify({
           type: 'serverQueried', addr: 'root.example:30120', name: 'First-party root'
@@ -244,7 +248,8 @@ class BrowserUITests(unittest.TestCase):
     def test_native_bootstrap_and_connect_payload(self):
         self.load()
         calls = self.page.evaluate('window.__calls')
-        self.assertEqual([call[0] for call in calls if call[0] is not None][:2], ['getMinModeInfo', 'getFavorites'])
+        self.assertEqual([call[0] for call in calls if call[0] is not None][:3],
+                         ['openvConnectionSnapshot', 'getMinModeInfo', 'getFavorites'])
         self.page.locator('#server-address').fill('PLAY.EXAMPLE.COM:30120')
         self.page.locator('#connect-form button[type=submit]').click()
         calls = self.page.evaluate('window.__calls')
@@ -254,6 +259,236 @@ class BrowserUITests(unittest.TestCase):
         self.assertEqual(json.loads(connect[0][1])[0], 'play.example.com:30120')
         self.assertEqual(len(json.loads(connect[0][1])[1]), 32)
         self.assertIn('play.example.com:30120', self.page.locator('#recent-list').inner_text())
+
+    def test_real_native_stages_and_pending_probe_never_claim_gameplay(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        for stage, expected in [
+            ('downloading', 'downloading server resources'),
+            ('download_complete', 'resource transfer completed'),
+            ('connected', 'network transport connected'),
+            ('active', 'gameplay admission'),
+        ]:
+            self.page.evaluate("(a) => window.postMessage({type:'openvNativeStage',nonce:a[0],stage:a[1]},'*')", [nonce, stage])
+            self.page.wait_for_function("(text) => document.querySelector('#connection-state').textContent.includes(text)", arg=expected)
+            self.assertIn(expected, self.page.locator('#connection-state').inner_text())
+            self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(n) => window.postMessage({type:'openvNativeStage',nonce:n,stage:'__proto__'},'*')", nonce)
+        self.assertIn('gameplay admission', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(n) => window.postMessage({type:'openvTransportConnected',nonce:n},'*')", nonce)
+        self.assertIn('gameplay admission', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+
+    def test_native_connection_pending_gate_failure_and_retry(self):
+        self.load()
+        self.page.locator('#server-address').fill('play.example.com:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertIn('Waiting for server response', self.page.locator('#connection-state').inner_text())
+        import json
+        nonce = json.loads(next(c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'))[1]
+        self.page.evaluate("(nonce) => window.postMessage({type:'connecting',nonce},'*')", nonce)
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('not yet verified')")
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Rejected by server'},'*')", nonce)
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('Waiting for Cfx')")
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        # A failed native connection can remain non-IDLE. Neither a stale
+        # ACTIVE callback nor a pending probe may reopen the connection gate.
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvNativeStage',nonce,stage:'active'},'*')", nonce)
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'pending'},'*')", nonce)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertIn('Waiting for Cfx', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'absent'},'*')", nonce)
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
+        self.assertIn('native network connection ended', self.page.locator('#connection-state').inner_text())
+        self.page.locator('#connect-form button[type=submit]').click()
+        self.assertEqual(len([call for call in self.page.evaluate('window.__calls') if call[0] == 'connectTo']), 2)
+
+    def test_native_nonce_rejects_stale_and_untagged_events(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example.com:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        old = json.loads(next(c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'))[1]
+        self.page.evaluate("window.postMessage({type:'connectFailed',message:'Legacy untagged'},'*')")
+        self.page.evaluate("window.postMessage({type:'connectFailed',nonce:'0'.repeat(32),message:'Wrong request'},'*')")
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectAccepted',nonce},'*')", old)
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('accepted the request')")
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvTransportConnected',nonce},'*')", old)
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('not yet verified')")
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", old)
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
+        self.page.locator('#connect-form button[type=submit]').click()
+        new = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.assertNotEqual(new, old)
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Stale'},'*')", old)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectRejected',nonce,reason:'busy'},'*')", new)
+        # postMessage queues a browser task; do not race its dispatch with a
+        # synchronous Playwright disabled-state read.
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
+
+    def test_native_disconnect_requires_confirmation_and_matching_ack(self):
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        import json
+        token = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.assertTrue(self.page.locator('#connection-cancel').is_visible())
+        self.page.locator('#connection-cancel').click()
+        self.page.locator('#connection-disconnect-dialog button[value=cancel]').click()
+        self.assertFalse(any(c[0] == 'openvCancelConnect' for c in self.page.evaluate('window.__calls')))
+        self.page.locator('#connection-cancel').click()
+        self.page.locator('#connection-disconnect-dialog button[value=disconnect]').click()
+        self.page.wait_for_function("() => window.__calls.some(call => call[0] === 'openvCancelConnect')")
+        self.assertIn(['openvCancelConnect', token], self.page.evaluate('window.__calls'))
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", '0' * 32)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", token)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertTrue(self.page.locator('#connection-cancel').is_hidden())
+
+    def test_openv_join_code_card_submission_and_replay_fencing(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        card = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [
+                {'type': 'TextBlock', 'text': 'Connect to OpenV'},
+                {'type': 'TextBlock', 'text': 'Enter a one-time code.'},
+                {'type': 'Input.Text', 'id': 'join_code', 'maxLength': 43},
+            ],
+            'actions': [{'type': 'Action.Submit', 'title': 'Join server'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", ['0' * 32, card])
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
+        self.assertTrue(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.page.locator('#admission-code').fill('invalid')
+        self.page.locator('#admission-form button[type=submit]').click()
+        self.assertIn('43-character', self.page.locator('#admission-error').inner_text())
+        self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
+        code = 'A' * 42 + '_'
+        self.page.locator('#admission-code').fill(code)
+        self.page.locator('#admission-form button[type=submit]').click()
+        self.page.wait_for_function("!document.querySelector('#admission-dialog').open")
+        calls = [c for c in self.page.evaluate('window.__calls') if c[0] == 'openvSubmitJoinCode']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0][1]), [nonce, code])
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.page.wait_for_function("() => !document.querySelector('#connect-form button[type=submit]').disabled")
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+
+    def test_expired_admission_clears_secret_and_cancels_native(self):
+        import json
+        self.page.clock.install()
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        card = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [
+                {'type': 'TextBlock', 'text': 'Connect to OpenV'},
+                {'type': 'TextBlock', 'text': 'Enter a one-time code.'},
+                {'type': 'Input.Text', 'id': 'join_code', 'maxLength': 43},
+            ],
+            'actions': [{'type': 'Action.Submit'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, card])
+        self.page.locator('#admission-code').fill('S' * 43)
+        self.page.clock.fast_forward(60000)
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertIn(['openvCancelConnect', nonce], self.page.evaluate('window.__calls'))
+        self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.page.wait_for_function("() => !document.querySelector('#connect-form button[type=submit]').disabled")
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+
+    def test_native_rejected_admission_cancels_matching_connection(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.page.evaluate("(n) => window.postMessage({type:'openvAdmissionRejected',nonce:n},'*')", '0' * 32)
+        self.assertFalse(any(c[0] == 'openvCancelConnect' for c in self.page.evaluate('window.__calls')))
+        self.page.evaluate("(n) => window.postMessage({type:'openvAdmissionRejected',nonce:n},'*')", nonce)
+        self.page.wait_for_function("() => window.__calls.some(c => c[0] === 'openvCancelConnect')")
+        self.assertIn(['openvCancelConnect', nonce], self.page.evaluate('window.__calls'))
+        self.assertIn('rejected', self.page.locator('#toast').inner_text())
+
+    def test_openv_unsupported_card_cancels_and_dialog_abort_wipes_code(self):
+        import json
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        nonce = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        hostile = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [{'type': 'Input.Text', 'id': 'password'}],
+            'actions': [{'type': 'Action.OpenUrl', 'url': 'https://evil.invalid'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, hostile])
+        self.page.wait_for_function("() => window.__calls.some(c => c[0] === 'openvCancelConnect')")
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
+        self.assertIn(['openvCancelConnect', nonce], self.page.evaluate('window.__calls'))
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
+        self.page.locator('#connect-form button[type=submit]').click()
+        newer = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        card = json.dumps({
+            'type': 'AdaptiveCard', 'version': '1.0',
+            'body': [
+                {'type': 'TextBlock', 'text': 'Connect to OpenV'},
+                {'type': 'TextBlock', 'text': 'Enter a one-time code.'},
+                {'type': 'Input.Text', 'id': 'join_code', 'maxLength': 43},
+            ],
+            'actions': [{'type': 'Action.Submit'}],
+        })
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [newer, card])
+        self.page.locator('#admission-code').fill('B' * 43)
+        self.page.locator('#admission-abort').click()
+        self.page.wait_for_function("!document.querySelector('#admission-dialog').open")
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertIn(['openvCancelConnect', newer], self.page.evaluate('window.__calls'))
+        self.assertFalse(any(c[0] == 'openvSubmitJoinCode' for c in self.page.evaluate('window.__calls')))
+        self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", newer)
+        self.page.locator('#connect-form button[type=submit]').click()
+        newest = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [newest, card])
+        self.page.locator('#admission-code').fill('C' * 43)
+        self.page.locator('#admission-code').press('Escape')
+        self.assertEqual(self.page.locator('#admission-code').input_value(), '')
+        self.assertIn(['openvCancelConnect', newest], self.page.evaluate('window.__calls'))
+
+    def test_native_probe_does_not_grant_gameplay(self):
+        self.load()
+        self.page.locator('#server-address').fill('play.example:30120')
+        self.page.locator('#connect-form button[type=submit]').click()
+        import json
+        token = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'active'},'*')", token)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvTransportConnected',nonce},'*')", token)
+        self.assertIn('not yet verified', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectionProbe',nonce,state:'absent'},'*')", token)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
 
     def test_query_favorites_and_native_messages(self):
         self.load()
@@ -287,10 +522,12 @@ class BrowserUITests(unittest.TestCase):
         self.page.evaluate("window.postMessage({type:'connectTo',hostnameStr:'example.org:30120'},'*')")
         self.page.wait_for_timeout(100)
         self.assertTrue(any(c[0] == 'connectTo' for c in self.page.evaluate('window.__calls')))
-        self.page.evaluate("window.postMessage({type:'connectStatus',data:{message:'Loading verified resources'}},'*')")
+        import json
+        nonce = json.loads(next(c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'))[1]
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectStatus',data:{nonce,message:'Loading verified resources'}},'*')", nonce)
         self.page.wait_for_timeout(100)
         self.assertIn('Loading verified resources', self.page.locator('#toast').inner_text())
-        self.page.evaluate("window.postMessage({type:'connectFailed',message:'Server unavailable'},'*')")
+        self.page.evaluate("(nonce) => window.postMessage({type:'connectFailed',nonce,message:'Server unavailable'},'*')", nonce)
         self.page.wait_for_timeout(100)
         self.assertIn('Server unavailable', self.page.locator('#toast').inner_text())
 
@@ -349,6 +586,8 @@ class BrowserUITests(unittest.TestCase):
         child.wait_for_selector('#server-list', timeout=8000, state='attached')
         child.evaluate('''() => { window.__calls = []; window.invokeNative = (action, argument) => window.__calls.push([action, argument]); }''')
         child.add_style_tag(content=(APP / 'styles.css').read_text(encoding='utf-8'))
+        child.add_script_tag(content=(APP / 'connection.js').read_text(encoding='utf-8'))
+        child.add_script_tag(content=(APP / 'admission.js').read_text(encoding='utf-8'))
         child.add_script_tag(content=(APP / 'app.js').read_text(encoding='utf-8'))
         self.page.evaluate('''() => window.__rootPush('frameCall', 'mpMenu', JSON.stringify({
             type: 'serverQueried', addr: '127.0.0.1:30120', name: 'Trusted frame server', clients: 2, maxclients: 16
@@ -449,6 +688,48 @@ class BrowserUITests(unittest.TestCase):
         for source, expected in cases.items():
             with self.subTest(source=source):
                 self.assertEqual(self.page.evaluate('(value)=>window.OpenVUI.parseEndpoint(value)', source), expected)
+
+    def test_native_connection_recovers_after_cef_reload(self):
+        self.load()
+        self.assertIn(['openvConnectionSnapshot', ''], self.page.evaluate('window.__calls'))
+        nonce = 'a' * 32
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionSnapshot', nonce,
+            address: 'play.example.org:30120', stage: 'connected'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertFalse(self.page.locator('#connection-cancel').is_hidden())
+        self.assertIn(['openvConnectionProbe', nonce], self.page.evaluate('window.__calls'))
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionProbe', nonce, state: 'active'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertIn('network session is active', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'connectCard', nonce, remainingMs: 20000,
+            data: {card: JSON.stringify({
+                type: 'AdaptiveCard', version: '1.0',
+                body: [
+                    {type:'TextBlock',text:'Connect to OpenV'},
+                    {type:'TextBlock',text:'Enter the one-time game connection code.'},
+                    {type:'Input.Text',id:'join_code',maxLength:43}
+                ],
+                actions: [{type:'Action.Submit',title:'Join server'}]
+            })}
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertTrue(self.page.locator('#admission-dialog').evaluate('(el) => el.open'))
+        self.page.locator('#admission-code').fill('B' * 43)
+        self.page.locator('#admission-form button[type=submit]').click()
+        self.assertIn(['openvSubmitJoinCode', __import__('json').dumps([nonce, 'B' * 43], separators=(',', ':'))],
+                      self.page.evaluate('window.__calls'))
+        self.assertTrue(self.page.locator('#admission-dialog').is_hidden())
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectClosed', nonce, reason: 'native_idle'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
 
 
 if __name__ == '__main__':

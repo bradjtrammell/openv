@@ -13,6 +13,83 @@
   let recents = [];
   let confirmExit = true;
   let toastTimer;
+  const connection = window.OpenVConnectionCoordinator.create({
+    // Resolve the CEF crypto provider at request time. If secure randomness
+    // disappears after page initialization, fail closed before native dispatch.
+    crypto: { getRandomValues: bytes => {
+      const provider = window.crypto;
+      if (!provider || typeof provider.getRandomValues !== 'function') throw new Error('crypto unavailable');
+      return provider.getRandomValues(bytes);
+    } },
+    schedule: (callback, ms) => window.setTimeout(callback, ms),
+    cancel: timer => window.clearTimeout(timer),
+    probe: nonce => invoke('openvConnectionProbe', nonce),
+    onChange: updateConnectionState,
+  });
+
+  const admission = window.OpenVAdmission.create({
+    show: () => {
+      const dialog = document.getElementById('admission-dialog');
+      const input = document.getElementById('admission-code');
+      input.value = '';
+      document.getElementById('admission-error').textContent = '';
+      dialog.showModal();
+      input.focus();
+    },
+    hide: () => {
+      document.getElementById('admission-code').value = '';
+      const dialog = document.getElementById('admission-dialog');
+      if (dialog.open) dialog.close();
+    },
+    dispatch: (nonce, code) => invoke('openvSubmitJoinCode', JSON.stringify([nonce, code])),
+    schedule: (callback, ms) => window.setTimeout(callback, ms),
+    cancel: timer => window.clearTimeout(timer),
+    now: () => window.performance.now(),
+    onExpire: nonce => {
+      if (connection.owns(nonce)) {
+        connection.requestCancel(token => invoke('openvCancelConnect', token));
+        toast('Admission entry timed out. Generate a fresh one-time code and reconnect.');
+      }
+    },
+  });
+
+  function updateConnectionState({ phase, address, pending }) {
+    const status = document.getElementById('connection-state');
+    if (!status) return;
+    const messages = {
+      idle: 'No active connection request.',
+      requested: `Native connection requested for ${address}. Waiting for server response.`,
+      accepted: `Native client accepted the request for ${address}. Waiting for transport.`,
+      transport: `Transport reached ${address}. Game ownership, admission and gameplay are not yet verified.`,
+      rejected: 'The native client rejected the request. You may retry after the active connection ends.',
+      closed: 'The native network connection ended. You may retry.',
+      connecting: `Connecting to ${address}. Game ownership and multiplayer are not yet verified.`,
+      failed: 'The native client reported a connection failure. You may retry.',
+      checking: 'Checking native transport state after delayed connection events…',
+      native_active: 'Cfx network session is active. FXServer gameplay admission, player entities and resource execution are not yet verified.',
+      native_pending: 'Native connection remains in progress. Checking again in five seconds.',
+      native_initializing: 'Native client is initializing the server connection.',
+      native_handshake: 'Server initialization received. Waiting for resource transfer.',
+      native_downloading: 'Native client is downloading server resources. Execution is not yet verified.',
+      native_download_complete: 'Native resource transfer completed. Loading and gameplay are not yet verified.',
+      native_fetching: 'Native client is fetching server session data.',
+      native_connecting: 'Native client is establishing the Cfx network session.',
+      native_connected: 'Cfx network transport connected. Gameplay admission is not yet verified.',
+      unconfirmed: 'Native state is unconfirmed. Connect remains locked until native closure is confirmed.',
+      native_closing: 'Native connection is ending. Waiting for Cfx to confirm transport shutdown.',
+      cancel_requested: 'Disconnect requested. Waiting for native closure confirmation.',
+      dispatch_failed: 'The native client could not accept the connection request.',
+      disposed: 'Connection UI was closed.',
+    };
+    status.textContent = messages[phase] || messages.idle;
+    if (!pending || phase === 'cancel_requested' || phase === 'native_closing') admission.dismiss();
+    const submit = document.querySelector('#connect-form button[type="submit"]');
+    if (submit) submit.disabled = pending;
+    const disconnect = document.getElementById('connection-cancel');
+    if (disconnect) { disconnect.hidden = !pending || !nativeAvailable; disconnect.disabled = phase === 'cancel_requested'; }
+    // Rebuild native server cards so all join actions share the same pending gate.
+    renderAll();
+  }
 
   function parseEndpoint(value) {
     if (typeof value !== 'string' || value.length > 255) return null;
@@ -109,18 +186,22 @@
       toast('This OpenV gateway supports discovery only. GTA V gameplay is not available on this endpoint.');
       return false;
     }
-    // A fresh unpredictable correlation nonce is required for every attempt.
-    // Never fall back to an empty or predictable value if CEF crypto fails.
-    let nonce;
-    try {
-      if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') throw new Error('crypto unavailable');
-      nonce = Array.from(window.crypto.getRandomValues(new Uint8Array(16)),
-        byte => byte.toString(16).padStart(2, '0')).join('');
-    } catch {
-      toast('Secure connection initialization is unavailable. Restart OpenV and try again.');
+    if (!nativeAvailable) {
+      toast('OpenV native client is not available in this browser preview.');
       return false;
     }
-    if (!invoke('connectTo', JSON.stringify([parsed, nonce]))) return false;
+    const result = connection.start(parsed, (endpoint, nonce) =>
+      invoke('connectTo', JSON.stringify([endpoint, nonce])));
+    if (!result.ok) {
+      const errors = {
+        busy: 'A native connection request is already pending. Wait for its result.',
+        crypto: 'Secure connection initialization is unavailable. Restart OpenV and try again.',
+        timer: 'The client cannot monitor this connection request. Restart OpenV.',
+        dispatch: 'The native client could not accept the connection request.',
+      };
+      toast(errors[result.reason] || 'Unable to request this connection.');
+      return false;
+    }
     addRecent(parsed);
     toast(`Connection requested for ${parsed}. Waiting for the game client.`);
     return true;
@@ -154,6 +235,7 @@
       join.textContent = 'Not playable yet';
       join.title = 'The OpenV gateway is not connected to a GTA V gameplay transport';
     } else {
+      join.disabled = connection.active();
       join.addEventListener('click', () => connect(address));
     }
     const favorite = document.createElement('button'); favorite.className = 'star'; favorite.type = 'button';
@@ -246,25 +328,78 @@
         invoke('backfillDone');
         break;
       case 'connectCard':
-        invoke('cancelDefer');
-        toast('This server requested an unsupported interactive connection card; connection canceled.');
+        if (!connection.owns(message.nonce)) break;
+        if (!admission.present(message.nonce, message.data?.card, message.remainingMs ?? 60000)) {
+          admission.dismiss();
+          connection.requestCancel(nonce => invoke('openvCancelConnect', nonce));
+          toast('The server sent an unsupported admission card. Connection canceled.');
+        }
+        break;
+      case 'openvAdmissionCodeSubmitted':
+        if (connection.owns(message.nonce))
+          toast('One-time join code forwarded to the game server. Awaiting admission.');
+        break;
+      case 'openvAdmissionRejected':
+        if (connection.owns(message.nonce)) {
+          admission.dismiss();
+          connection.requestCancel(token => invoke('openvCancelConnect', token));
+          toast('The native admission capability expired or was rejected. Generate a fresh code and reconnect.');
+        }
         break;
       case 'setWarningMessage':
         if (typeof message.message === 'string') toast(message.message);
         break;
       case 'queryingFailed':
         toast('The server did not respond to the query. Check its address and availability.'); break;
+      case 'openvConnectAccepted':
+        connection.accepted(message.nonce);
+        break;
+      case 'openvConnectRejected':
+        if (connection.rejected(message.nonce)) {
+          const reasons = {
+            busy: 'Another game connection is already active.',
+            native_unavailable: 'The GTA V network runtime is not ready. Wait for the game client to initialize and retry.',
+            invalid_endpoint: 'The native game client rejected this server address.',
+          };
+          toast(Object.prototype.hasOwnProperty.call(reasons, message.reason)
+            ? reasons[message.reason] : 'The native client rejected this connection request.');
+        }
+        break;
+      case 'openvTransportConnected':
+        if (connection.transport(message.nonce)) toast('Server transport connected. Waiting for game admission.');
+        break;
+      case 'openvNativeStage':
+        connection.nativeStage(message.nonce, message.stage);
+        break;
+      case 'openvDisconnectPending':
+        connection.terminating(message.nonce);
+        break;
+      case 'openvConnectClosed':
+        if (connection.closed(message.nonce)) toast(message.reason === 'native_start_failed'
+          ? 'The game network runtime failed to start the connection. You can retry.'
+          : 'The native connection ended.');
+        break;
+      case 'openvConnectionSnapshot':
+        // Recover a transport that outlived this CEF frame, never rejoin it.
+        connection.restore(message.nonce, message.address, message.stage);
+        break;
+      case 'openvConnectionProbe':
+        connection.probed(message.nonce, message.state);
+        break;
       case 'connectStatus':
-        if (message.data && typeof message.data.message === 'string') toast(message.data.message);
+        if (connection.progress(message.data?.nonce) &&
+            typeof message.data?.message === 'string') toast(message.data.message);
         break;
       case 'connectFailed':
-        if (typeof message.message === 'string') toast(`Connection failed: ${message.message}`);
+        if (connection.failed(message.nonce) && typeof message.message === 'string')
+          toast(`Connection failed: ${message.message}. Waiting for native transport shutdown.`);
         break;
       case 'connecting':
-        toast('Connecting to server…');
+        if (connection.progress(message.nonce)) toast('Connecting to server…');
         break;
       case 'connectionStatus':
-        if (typeof message.message === 'string') toast(message.message);
+        if (connection.progress(message.nonce) && typeof message.message === 'string')
+          toast(message.message);
         break;
       default: break;
     }
@@ -290,15 +425,49 @@
     document.getElementById('refresh').addEventListener('click', () => { if (invoke('refreshServers')) toast('Refreshing server discovery…'); });
     document.getElementById('add-favorite').addEventListener('click', () => { switchView('home'); document.getElementById('server-address').focus(); toast('Connect to a server, then select its star to save it.'); });
     document.getElementById('clear-recents').addEventListener('click', () => { recents = []; writeStored(STORAGE_RECENT, []); renderRecents(); toast('Recent server history cleared.'); });
+    const admissionDialog = document.getElementById('admission-dialog');
+    admissionDialog.querySelector('form').addEventListener('submit', event => {
+      event.preventDefault();
+      const result = admission.submit(document.getElementById('admission-code').value);
+      if (!result.ok)
+        document.getElementById('admission-error').textContent =
+          result.reason === 'invalid' ? 'Enter the 43-character code from your authenticated OpenV session.' :
+          ['expired', 'clock'].includes(result.reason) ? 'Admission timed out. Generate a fresh code and reconnect.' :
+          'Could not forward the code to the native client. Retry or disconnect.';
+    });
+    function abortAdmission() {
+      if (!admission.active()) return;
+      // Clear the code synchronously on click or Escape, before the browser's
+      // asynchronous dialog close event can expose a stale secret.
+      admission.dismiss();
+      if (!connection.requestCancel(nonce => invoke('openvCancelConnect', nonce)))
+        toast('Native cancellation is unconfirmed. Disconnect remains available.');
+    }
+    document.getElementById('admission-abort').addEventListener('click', abortAdmission);
+    admissionDialog.addEventListener('cancel', event => {
+      event.preventDefault();
+      abortAdmission();
+    });
+    admissionDialog.addEventListener('close', abortAdmission);
+    const disconnectDialog = document.getElementById('connection-disconnect-dialog');
+    document.getElementById('connection-cancel').addEventListener('click', () => disconnectDialog.showModal());
+    disconnectDialog.addEventListener('close', () => {
+      if (disconnectDialog.returnValue === 'disconnect' &&
+          !connection.requestCancel(nonce => invoke('openvCancelConnect', nonce)))
+        toast('Native disconnect could not be requested. Connection remains locked.');
+    });
     const dialog = document.getElementById('confirm-dialog');
     document.getElementById('quit').addEventListener('click', () => { if (confirmExit) dialog.showModal(); else invoke('quit'); });
     dialog.addEventListener('close', () => { if (dialog.returnValue === 'exit') invoke('quit'); });
     window.addEventListener('message', onNativeMessage);
+    window.addEventListener('pagehide', () => { admission.dismiss(); connection.dispose(); }, { once: true });
     // Cfx queues native messages until its UI registers a listener. Flush them.
     if (typeof window.nuiInternalCallMessages === 'function') window.nuiInternalCallMessages();
     window.nuiInternalHandledMessages = true;
     renderAll();
+    updateConnectionState({ phase: 'idle', address: '', pending: false });
     if (nativeAvailable) {
+      invoke('openvConnectionSnapshot');
       invoke('getMinModeInfo'); // Required by the inherited Cfx NUI startup lifecycle.
       invoke('getFavorites');
     }
