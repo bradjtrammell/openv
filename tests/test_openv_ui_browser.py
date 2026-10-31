@@ -248,7 +248,8 @@ class BrowserUITests(unittest.TestCase):
     def test_native_bootstrap_and_connect_payload(self):
         self.load()
         calls = self.page.evaluate('window.__calls')
-        self.assertEqual([call[0] for call in calls if call[0] is not None][:2], ['getMinModeInfo', 'getFavorites'])
+        self.assertEqual([call[0] for call in calls if call[0] is not None][:3],
+                         ['openvConnectionSnapshot', 'getMinModeInfo', 'getFavorites'])
         self.page.locator('#server-address').fill('PLAY.EXAMPLE.COM:30120')
         self.page.locator('#connect-form button[type=submit]').click()
         calls = self.page.evaluate('window.__calls')
@@ -317,9 +318,9 @@ class BrowserUITests(unittest.TestCase):
         self.page.evaluate("window.postMessage({type:'connectFailed',nonce:'0'.repeat(32),message:'Wrong request'},'*')")
         self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectAccepted',nonce},'*')", old)
-        self.assertIn('accepted the request', self.page.locator('#connection-state').inner_text())
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('accepted the request')")
         self.page.evaluate("(nonce) => window.postMessage({type:'openvTransportConnected',nonce},'*')", old)
-        self.assertIn('not yet verified', self.page.locator('#connection-state').inner_text())
+        self.page.wait_for_function("document.querySelector('#connection-state').textContent.includes('not yet verified')")
         self.page.evaluate("(nonce) => window.postMessage({type:'openvConnectClosed',nonce},'*')", old)
         self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
         self.page.locator('#connect-form button[type=submit]').click()
@@ -444,9 +445,11 @@ class BrowserUITests(unittest.TestCase):
             'actions': [{'type': 'Action.OpenUrl', 'url': 'https://evil.invalid'}],
         })
         self.page.evaluate("(args) => window.postMessage({type:'connectCard',nonce:args[0],data:{card:args[1]}},'*')", [nonce, hostile])
+        self.page.wait_for_function("() => window.__calls.some(c => c[0] === 'openvCancelConnect')")
         self.assertFalse(self.page.locator('#admission-dialog').evaluate('(d) => d.open'))
         self.assertIn(['openvCancelConnect', nonce], self.page.evaluate('window.__calls'))
         self.page.evaluate("(n) => window.postMessage({type:'openvConnectClosed',nonce:n},'*')", nonce)
+        self.page.wait_for_function("!document.querySelector('#connect-form button[type=submit]').disabled")
         self.page.locator('#connect-form button[type=submit]').click()
         newer = json.loads([c[1] for c in self.page.evaluate('window.__calls') if c[0] == 'connectTo'][-1])[1]
         card = json.dumps({
