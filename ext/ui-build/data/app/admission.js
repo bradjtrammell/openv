@@ -42,17 +42,18 @@
       try { onExpire(request.nonce); } catch (_) { /* native closure unconfirmed */ }
       return true;
     }
-    function present(nonce, card) {
+    function present(nonce, card, remainingMs = SUBMISSION_MS) {
       if (pending || typeof nonce !== 'string' || !NONCE_PATTERN.test(nonce) ||
-          !supported(card)) return false;
+          !supported(card) || !Number.isInteger(remainingMs) ||
+          remainingMs < 1 || remainingMs > SUBMISSION_MS) return false;
       let started;
       try { started = now(); } catch (_) { return false; }
       if (!Number.isFinite(started) || started < 0 ||
-          !Number.isFinite(started + SUBMISSION_MS)) return false;
-      const request = { nonce, started, timer: null };
+          !Number.isFinite(started + remainingMs)) return false;
+      const request = { nonce, started, expiresAt: started + remainingMs, timer: null };
       pending = request;
       try {
-        const timer = schedule(() => expire(request), SUBMISSION_MS);
+        const timer = schedule(() => expire(request), remainingMs);
         if (timer === false || timer == null) throw new Error('timer unavailable');
         request.timer = timer;
         show();
@@ -67,7 +68,7 @@
         expire(pending);
         return { ok: false, reason: 'clock' };
       }
-      if (current - pending.started >= SUBMISSION_MS) {
+      if (current >= pending.expiresAt) {
         expire(pending);
         return { ok: false, reason: 'expired' };
       }

@@ -89,4 +89,26 @@ assert.equal(a.submit(code).reason, 'clock');
 assert.equal(expired.at(-1), other);
 assert.throws(() => create({show() {}}), TypeError);
 assert.deepEqual(calls[1], [nonce, code]);
-console.log('PASS: strict FXServer card schema, nonce fencing, 60-second expiry, stale timers, cancel and secret cleanup');
+{
+  // A recovered card inherits only its remaining native submission window.
+  let clock = 100, delay, dispatches = 0;
+  const restored = create({
+    show() {}, hide() {},
+    dispatch() { dispatches++; return true; },
+    schedule(fn, ms) { delay = ms; return 1; },
+    cancel() {}, now() { return clock; }, onExpire() {},
+  });
+  assert.equal(restored.present(nonce, card, 0), false);
+  assert.equal(restored.present(nonce, card, 60001), false);
+  assert.equal(restored.present(nonce, card, 1.5), false);
+  assert.equal(restored.present(nonce, card, 25000), true);
+  assert.equal(delay, 25000);
+  clock += 24999;
+  assert.equal(restored.submit(code).ok, true);
+  assert.equal(dispatches, 1);
+  assert.equal(restored.present(nonce, card, 1000), true);
+  clock += 1000;
+  assert.equal(restored.submit(code).reason, 'expired');
+  assert.equal(dispatches, 1);
+}
+console.log('PASS: strict FXServer card schema, original deadline across CEF reload, nonce fencing, stale timers, cancel and secret cleanup');

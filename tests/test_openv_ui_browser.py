@@ -704,6 +704,25 @@ class BrowserUITests(unittest.TestCase):
         self.page.wait_for_timeout(100)
         self.assertIn('network session is active', self.page.locator('#connection-state').inner_text())
         self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'connectCard', nonce, remainingMs: 20000,
+            data: {card: JSON.stringify({
+                type: 'AdaptiveCard', version: '1.0',
+                body: [
+                    {type:'TextBlock',text:'Connect to OpenV'},
+                    {type:'TextBlock',text:'Enter the one-time game connection code.'},
+                    {type:'Input.Text',id:'join_code',maxLength:43}
+                ],
+                actions: [{type:'Action.Submit',title:'Join server'}]
+            })}
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertTrue(self.page.locator('#admission-dialog').evaluate('(el) => el.open'))
+        self.page.locator('#admission-code').fill('B' * 43)
+        self.page.locator('#admission-form button[type=submit]').click()
+        self.assertIn(['openvSubmitJoinCode', __import__('json').dumps([nonce, 'B' * 43], separators=(',', ':'))],
+                      self.page.evaluate('window.__calls'))
+        self.assertTrue(self.page.locator('#admission-dialog').is_hidden())
+        self.page.evaluate("""(nonce) => window.postMessage({
             type: 'openvConnectClosed', nonce, reason: 'native_idle'
         }, '*')""", nonce)
         self.page.wait_for_timeout(100)

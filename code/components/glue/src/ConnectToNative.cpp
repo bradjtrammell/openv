@@ -84,6 +84,12 @@ std::string g_lastConn;
 static std::string g_connectNonce;
 static std::string g_openvUIRequestNonce;
 static openv::admission::CardSession g_openvAdmissionCard;
+static std::string g_openvCardMarkup; // bounded public card, never its private token
+static void ClearOpenVAdmissionCard()
+{
+    g_openvAdmissionCard.Clear();
+    g_openvCardMarkup.clear();
+}
 
 static void PostOpenVConnectionEvent(const char* type, const std::string& nonce, const char* reason = "")
 {
@@ -245,7 +251,7 @@ static_assert(NetLibrary::CS_IDLE == 0 && NetLibrary::CS_INITING == 1 &&
 static void FinishOpenVConnectionIfIdle(const char* reason)
 {
     const auto nonce = g_openvUIRequestNonce;
-    g_openvAdmissionCard.Clear();
+    ClearOpenVAdmissionCard();
     g_cardConnectionToken.clear();
     const bool idle = openv::connection::NativeClosureConfirmed(
         netLibrary != nullptr,
@@ -325,7 +331,7 @@ static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 		return false;
 	}
 
-	g_openvAdmissionCard.Clear();
+	ClearOpenVAdmissionCard();
 	g_connected = true;
 	if (!uiNonce.empty())
 	{
@@ -791,12 +797,13 @@ static InitFunction initFunction([] ()
 			if (!g_connected || !nui::HasMainUI() || card.empty() || card.size() > 4096 ||
 				!g_openvAdmissionCard.Arm(nonce, token))
 			{
-				g_openvAdmissionCard.Clear();
+				ClearOpenVAdmissionCard();
 				if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 				netLibrary->Disconnect();
 				FinishOpenVConnectionIfIdle("admission_card_unavailable");
 				return;
 			}
+			g_openvCardMarkup = card;
 			const auto message = nlohmann::json::object({
 				{ "type", "connectCard" }, { "nonce", nonce },
 				{ "data", nlohmann::json::object({ { "card", card } }) }
@@ -1150,6 +1157,21 @@ static InitFunction initFunction([] ()
 			});
 			nui::PostFrameMessage("mpMenu", snapshot.dump(-1, ' ', false,
 				nlohmann::detail::error_handler_t::replace));
+			if (stage && !g_openvCardMarkup.empty())
+			{
+				const auto remaining = g_openvAdmissionCard.RemainingMs(g_openvUIRequestNonce);
+				if (remaining > 0)
+				{
+					const auto restored = nlohmann::json::object({
+						{ "type", "connectCard" }, { "nonce", g_openvUIRequestNonce },
+						{ "remainingMs", remaining },
+						{ "data", nlohmann::json::object({ { "card", g_openvCardMarkup } }) }
+					});
+					nui::PostFrameMessage("mpMenu", restored.dump(-1, ' ', false,
+						nlohmann::detail::error_handler_t::replace));
+				}
+				else ClearOpenVAdmissionCard();
+			}
 		}
 		else if (!_wcsicmp(type, L"openvConnectionProbe"))
 		{
@@ -1180,6 +1202,7 @@ static InitFunction initFunction([] ()
 					PostOpenVConnectionEvent("openvAdmissionRejected", nonce, "expired_or_invalid");
 					return;
 				}
+				g_openvCardMarkup.clear();
 				const auto response = nlohmann::json::object({ { "join_code", code } });
 				netLibrary->SubmitCardResponse(response.dump(), cardToken);
 				PostOpenVConnectionEvent("openvAdmissionCodeSubmitted", nonce);
@@ -1197,7 +1220,7 @@ static InitFunction initFunction([] ()
 			// Retain the nonce and connection latch until Cfx reports IDLE.
 			// Disconnect may be asynchronous; a premature terminal event would
 			// unlock the UI while native transport remains alive.
-			g_openvAdmissionCard.Clear();
+			ClearOpenVAdmissionCard();
 			if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 			netLibrary->Disconnect();
 			// OnStateChanged normally publishes closure. Cover already-IDLE

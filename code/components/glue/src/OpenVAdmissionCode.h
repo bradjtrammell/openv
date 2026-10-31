@@ -5,6 +5,7 @@
 #pragma once
 #include "OpenVConnectionRequest.h"
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -42,6 +43,14 @@ public:
     bool Active(std::string_view nonce, Clock::time_point now = Clock::now()) const
     {
         return !token_.empty() && nonce_ == nonce && now >= armed_at_ && now - armed_at_ < SubmissionWindow;
+    }
+    // CEF reloads cannot reset the original 60-second native card deadline.
+    uint32_t RemainingMs(std::string_view nonce, Clock::time_point now = Clock::now()) const
+    {
+        if (!Active(nonce, now)) return 0;
+        const auto remaining = SubmissionWindow - (now - armed_at_);
+        return static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count());
     }
     bool Take(std::string_view nonce, std::string_view code, std::string& token,
               Clock::time_point now = Clock::now())

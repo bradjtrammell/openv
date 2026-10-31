@@ -329,7 +329,7 @@
         break;
       case 'connectCard':
         if (!connection.owns(message.nonce)) break;
-        if (!admission.present(message.nonce, message.data?.card)) {
+        if (!admission.present(message.nonce, message.data?.card, message.remainingMs ?? 60000)) {
           admission.dismiss();
           connection.requestCancel(nonce => invoke('openvCancelConnect', nonce));
           toast('The server sent an unsupported admission card. Connection canceled.');
