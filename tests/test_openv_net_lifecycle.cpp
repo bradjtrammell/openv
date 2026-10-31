@@ -53,6 +53,14 @@ int main()
     assert(std::string_view(NativeProbeState(true, true, 8, false)) == "other");
     assert(std::string_view(NativeProbeState(true, true, 8, true)) == "active");
     assert(std::string_view(NativeProbeState(true, true, 7, true)) == "pending");
+    using openv::connection::NativeSnapshotStage;
+    assert(std::string_view(NativeSnapshotStage(true, true, true, 8)) == "active");
+    assert(std::string_view(NativeSnapshotStage(true, true, true, 3)) == "downloading");
+    assert(std::string_view(NativeSnapshotStage(true, true, true, 0)) == "pending");
+    assert(std::string_view(NativeSnapshotStage(true, true, false, -1)) == "pending");
+    assert(std::string_view(NativeSnapshotStage(true, true, true, 100)) == "pending");
+    assert(NativeSnapshotStage(false, true, true, 8) == nullptr);
+    assert(NativeSnapshotStage(true, false, true, 8) == nullptr);
     int starts = 0;
     assert(openv::connection::DispatchNativeStart([&] { ++starts; }));
     assert(starts == 1);

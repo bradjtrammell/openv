@@ -52,6 +52,17 @@ inline bool NativeClosureConfirmed(bool has_library, int native_state) noexcept
     return !has_library || native_state == 0;
 }
 
+// A CEF reload may recover the existing native nonce but cannot create one.
+// Pre-dispatch IDLE or unknown native states remain pending until probed.
+inline const char* NativeSnapshotStage(bool connected, bool valid_nonce,
+                                       bool has_library, int native_state) noexcept
+{
+    if (!connected || !valid_nonce) return nullptr;
+    if (!has_library || native_state == 0) return "pending";
+    const char* stage = NativeStageName(native_state);
+    return stage ? stage : "pending";
+}
+
 // Probe native transport state, not only the UI connection latch. Error paths
 // may clear the latch before Cfx has completed asynchronous teardown.
 // Unknown native states fail closed until an authoritative IDLE is observed.

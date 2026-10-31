@@ -379,6 +379,10 @@
           ? 'The game network runtime failed to start the connection. You can retry.'
           : 'The native connection ended.');
         break;
+      case 'openvConnectionSnapshot':
+        // Recover a transport that outlived this CEF frame, never rejoin it.
+        connection.restore(message.nonce, message.address, message.stage);
+        break;
       case 'openvConnectionProbe':
         connection.probed(message.nonce, message.state);
         break;
@@ -463,6 +467,7 @@
     renderAll();
     updateConnectionState({ phase: 'idle', address: '', pending: false });
     if (nativeAvailable) {
+      invoke('openvConnectionSnapshot');
       invoke('getMinModeInfo'); // Required by the inherited Cfx NUI startup lifecycle.
       invoke('getFavorites');
     }

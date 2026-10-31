@@ -347,4 +347,38 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.closed(token), true);
   assert.equal(c.active(), false);
 }
-console.log('PASS: native connection coordination, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');
+{
+  const { coordinator: c, timers, changes, probes } = fixture();
+  const token = 'ab'.repeat(16);
+  for (const invalid of ['', 'AB'.repeat(16), 'x'.repeat(32)])
+    assert.equal(c.restore(invalid, 'play.example:30120', 'active'), false);
+  assert.equal(c.restore(token, 'play.example:30120', '__proto__'), false);
+  assert.equal(c.restore(token, 'play.example:30120', 'active'), true);
+  assert.equal(c.active(), true);
+  assert.equal(changes.at(-1).phase, 'checking');
+  assert.deepEqual(probes, [token]);
+  assert.equal(c.start('other.example:30120', () => true).reason, 'busy');
+  assert.equal(c.restore(token, 'other.example:30120', 'active'), false);
+  assert.equal(c.probed(token, 'active'), true);
+  assert.equal(changes.at(-1).phase, 'native_active');
+  assert.equal(c.requestCancel(nonce => nonce === token), true);
+  assert.equal(c.closed(token), true);
+  assert.equal(c.active(), false);
+  assert.equal(timers.size, 0);
+}
+{
+  let counter = 0;
+  const { coordinator: c, timers } = fixture({
+    getRandomValues(bytes) { bytes.fill(++counter); return bytes; },
+  });
+  const old = 'ab'.repeat(16);
+  assert.equal(c.restore(old, 'play.example:30120', 'pending'), true);
+  const stale = timers.values().next().value;
+  assert.equal(c.closed(old), true);
+  assert.equal(c.start('next.example:30120', () => true).ok, true);
+  stale();
+  assert.equal(c.active(), true, 'stale restored watchdog unlocked a new connection');
+  assert.equal(c.owns('01'.repeat(16)), true);
+  assert.equal(c.probed(old, 'absent'), false);
+}
+console.log('PASS: native connection coordination, CEF reload recovery, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');

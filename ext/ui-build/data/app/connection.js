@@ -112,6 +112,23 @@
       if (request.phase === 'requested') publish('requested', address);
       return { ok: true };
     }
+    // CEF can reload without ending NetLibrary. Adopt the existing native
+    // nonce, then independently probe transport before trusting its state.
+    // A restored request never dispatches a second ConnectToServer.
+    function restore(token, address, stage) {
+      if (pending || typeof token !== 'string' || !/^[0-9a-f]{32}$/.test(token) ||
+          typeof address !== 'string' || !address || address.length > 255 ||
+          /[\x00-\x1f\x7f]/.test(address) ||
+          (stage !== 'pending' && !Object.prototype.hasOwnProperty.call(NATIVE_STAGES, stage)))
+        return false;
+      const request = { id: ++sequence, address, token, phase: 'checking',
+        timer: null, timerEpoch: 0, cancellationRequested: false, terminal: false };
+      pending = request;
+      publish('checking', address);
+      if (!arm(request, PROBE_MS, () => checkNative(request))) unconfirmed(request);
+      try { probe(token); } catch (_) { /* native gate remains locked */ }
+      return true;
+    }
     function matching(token) {
       return pending !== null && typeof token === 'string' && pending.token === token;
     }
@@ -196,7 +213,7 @@
       return true;
     }
     return Object.freeze({
-      start, active: () => pending !== null,
+      start, restore, active: () => pending !== null,
       owns: token => matching(token),
       accepted: token => progress('accepted', token),
       progress: token => progress('connecting', token),

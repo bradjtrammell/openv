@@ -686,6 +686,29 @@ class BrowserUITests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual(self.page.evaluate('(value)=>window.OpenVUI.parseEndpoint(value)', source), expected)
 
+    def test_native_connection_recovers_after_cef_reload(self):
+        self.load()
+        self.assertIn(['openvConnectionSnapshot', ''], self.page.evaluate('window.__calls'))
+        nonce = 'a' * 32
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionSnapshot', nonce,
+            address: 'play.example.org:30120', stage: 'connected'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertFalse(self.page.locator('#connection-cancel').is_hidden())
+        self.assertIn(['openvConnectionProbe', nonce], self.page.evaluate('window.__calls'))
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionProbe', nonce, state: 'active'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertIn('network session is active', self.page.locator('#connection-state').inner_text())
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectClosed', nonce, reason: 'native_idle'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+
 
 if __name__ == '__main__':
     unittest.main()

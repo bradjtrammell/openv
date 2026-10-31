@@ -1134,6 +1134,23 @@ static InitFunction initFunction([] ()
 				!openv::connection::ValidEndpoint(hostName)) return;
 			if (ConnectTo(hostName, true, "", uiNonce)) lastHostName = hostName;
 		}
+		else if (!_wcsicmp(type, L"openvConnectionSnapshot"))
+		{
+			// CEF can reload while NetLibrary is still connected. Reattach only
+			// the existing UI nonce; never expose any private bearer or ticket.
+			const char* stage = openv::connection::NativeSnapshotStage(
+				g_connected, openv::connection::ValidNonce(g_openvUIRequestNonce),
+				netLibrary != nullptr,
+				netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1);
+			const auto snapshot = nlohmann::json::object({
+				{ "type", "openvConnectionSnapshot" },
+				{ "nonce", stage ? g_openvUIRequestNonce : "" },
+				{ "address", stage ? g_lastConn : "" },
+				{ "stage", stage ? stage : "absent" }
+			});
+			nui::PostFrameMessage("mpMenu", snapshot.dump(-1, ' ', false,
+				nlohmann::detail::error_handler_t::replace));
+		}
 		else if (!_wcsicmp(type, L"openvConnectionProbe"))
 		{
 			const std::string nonce = arg ? ToNarrow(arg) : std::string();
