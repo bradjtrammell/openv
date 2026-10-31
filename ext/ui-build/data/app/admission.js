@@ -26,13 +26,25 @@
     if (![show, hide, dispatch, schedule, cancel, now, onExpire].every(fn => typeof fn === 'function'))
       throw new TypeError('Invalid OpenV admission coordinator');
     let pending = null;
+    function clock() {
+      try {
+        const value = now();
+        return Number.isFinite(value) && value >= 0 ? value : NaN;
+      } catch (_) { return NaN; }
+    }
+    function clear(request) {
+      // A canceled timer can already be queued by CEF; fence its callback.
+      request.epoch += 1;
+      if (request.timer !== null) {
+        try { cancel(request.timer); } catch (_) { /* disposed */ }
+        request.timer = null;
+      }
+    }
     function dismiss() {
       if (!pending) return false;
       const previous = pending;
       pending = null;
-      if (previous.timer !== null) {
-        try { cancel(previous.timer); } catch (_) { /* disposed */ }
-      }
+      clear(previous);
       hide();
       return true;
     }
@@ -42,40 +54,87 @@
       try { onExpire(request.nonce); } catch (_) { /* native closure unconfirmed */ }
       return true;
     }
+    function arm(request, delay) {
+      clear(request);
+      const epoch = request.epoch;
+      try {
+        const timer = schedule(() => {
+          if (pending !== request || request.epoch !== epoch) return;
+          const current = clock();
+          // Timer delivery is not an authority clock. A premature callback
+          // must not shorten the original native admission deadline.
+          if (!Number.isFinite(current) || current < request.started ||
+              current >= request.expiresAt) {
+            expire(request);
+          } else if (!arm(request, Math.ceil(request.expiresAt - current))) {
+            expire(request); // No reliable watchdog: fail closed.
+          }
+        }, delay);
+        if (timer === false || timer == null) throw new Error('timer unavailable');
+        if (pending !== request || request.epoch !== epoch) {
+          try { cancel(timer); } catch (_) { /* already delivered */ }
+          return false;
+        }
+        request.timer = timer;
+        return true;
+      } catch (_) { return false; }
+    }
     function present(nonce, card, remainingMs = SUBMISSION_MS) {
-      if (pending || typeof nonce !== 'string' || !NONCE_PATTERN.test(nonce) ||
+      if (typeof nonce !== 'string' || !NONCE_PATTERN.test(nonce) ||
           !supported(card) || !Number.isInteger(remainingMs) ||
           remainingMs < 1 || remainingMs > SUBMISSION_MS) return false;
-      let started;
-      try { started = now(); } catch (_) { return false; }
-      if (!Number.isFinite(started) || started < 0 ||
+      const started = clock();
+      if (!Number.isFinite(started) ||
           !Number.isFinite(started + remainingMs)) return false;
-      const request = { nonce, started, expiresAt: started + remainingMs, timer: null };
+      if (pending) {
+        // Cfx may replay the same card during CEF recovery. Accept the
+        // identical card without redisplaying it or extending its deadline.
+        // A shorter native remaining lifetime tightens the local deadline.
+        if (pending.nonce !== nonce || pending.card !== card) return false;
+        if (started < pending.started || started >= pending.expiresAt) {
+          expire(pending);
+          return false;
+        }
+        const deadline = Math.min(pending.expiresAt, started + remainingMs);
+        if (deadline < pending.expiresAt) {
+          pending.expiresAt = deadline;
+          if (!arm(pending, Math.ceil(deadline - started))) {
+            expire(pending);
+            return false;
+          }
+        }
+        return true;
+      }
+      const request = { nonce, card, started, expiresAt: started + remainingMs,
+        timer: null, epoch: 0 };
       pending = request;
-      try {
-        const timer = schedule(() => expire(request), remainingMs);
-        if (timer === false || timer == null) throw new Error('timer unavailable');
-        request.timer = timer;
-        show();
-      } catch (_) { dismiss(); return false; }
+      if (!arm(request, remainingMs)) {
+        expire(request);
+        return false;
+      }
+      try { show(); } catch (_) { expire(request); return false; }
       return true;
     }
     function submit(code) {
       if (!pending) return { ok: false, reason: 'inactive' };
-      let current;
-      try { current = now(); } catch (_) { current = NaN; }
-      if (!Number.isFinite(current) || current < pending.started) {
-        expire(pending);
+      const request = pending;
+      const current = clock();
+      if (!Number.isFinite(current) || current < request.started) {
+        expire(request);
         return { ok: false, reason: 'clock' };
       }
-      if (current >= pending.expiresAt) {
-        expire(pending);
+      if (current >= request.expiresAt) {
+        expire(request);
         return { ok: false, reason: 'expired' };
       }
       const normalized = typeof code === 'string' ? code.trim() : '';
       if (!CODE_PATTERN.test(normalized)) return { ok: false, reason: 'invalid' };
       let sent = false;
-      try { sent = dispatch(pending.nonce, normalized) === true; } catch (_) { /* native unavailable */ }
+      try { sent = dispatch(request.nonce, normalized) === true; }
+      catch (_) { /* native unavailable */ }
+      // Native dispatch can synchronously reject, expire, or replace a card.
+      // Never dismiss the replacement or report a stale request as current.
+      if (pending !== request) return { ok: sent, reason: sent ? undefined : 'stale' };
       if (!sent) return { ok: false, reason: 'dispatch' };
       dismiss();
       return { ok: true };

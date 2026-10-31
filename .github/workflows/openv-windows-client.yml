@@ -24,6 +24,7 @@ on:
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_connection.mjs'
       - 'tests/test_openv_admission.mjs'
+      - 'tests/test_openv_admission_replay.mjs'
       - 'tests/test_openv_runtime_audit.py'
 concurrency:
   group: openv-windows-client-${{ github.ref }}
@@ -85,7 +86,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'OpenV source-only loadscreen JavaScript failed syntax check' }
       - name: Test native connection lifecycle
         run: |
-          node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs
+          node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs tests/test_openv_admission_replay.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Native connection lifecycle regressions failed' }
       - name: Test first-party UI packager
         run: |

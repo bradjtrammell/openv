@@ -79,6 +79,7 @@ assert.equal(a.active(), false);
 assert.equal(expired.at(-1), other);
 assert.equal(a.present(nonce, card), true);
 const timeout = timers.get(timerId);
+time += SUBMISSION_MS;
 timeout();
 assert.equal(a.active(), false);
 assert.equal(expired.at(-1), nonce);

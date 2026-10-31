@@ -19,6 +19,7 @@ on:
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_connection.mjs'
       - 'tests/test_openv_admission.mjs'
+      - 'tests/test_openv_admission_replay.mjs'
       - 'tests/test_openv_connection_request.cpp'
       - 'tests/test_openv_admission_code.cpp'
       - 'code/components/glue/src/ConnectToNative.cpp'
@@ -46,6 +47,7 @@ on:
       - 'tests/test_openv_ui.py'
       - 'tests/test_openv_connection.mjs'
       - 'tests/test_openv_admission.mjs'
+      - 'tests/test_openv_admission_replay.mjs'
       - 'tests/test_openv_connection_request.cpp'
       - 'tests/test_openv_admission_code.cpp'
       - 'code/components/glue/src/ConnectToNative.cpp'
@@ -127,7 +129,7 @@ jobs:
           node --check ext/ui-build/data/root.js
           node --check ext/ui-build/loadscreen-fallback/code.js
       - name: Run native connection lifecycle regressions
-        run: node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs
+        run: node --test tests/test_openv_connection.mjs tests/test_openv_admission.mjs tests/test_openv_admission_replay.mjs
       - name: Run archive and security tests
         run: python -m unittest discover -s tests -p test_openv_ui.py -v
       - name: Run Windows runtime and PE parser regression tests
