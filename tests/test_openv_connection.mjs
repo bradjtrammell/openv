@@ -381,4 +381,38 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.owns('01'.repeat(16)), true);
   assert.equal(c.probed(old, 'absent'), false);
 }
+{
+  // A late server card must never reopen admission after a native cancel.
+  // A CEF reload during asynchronous teardown must recover the cancellation
+  // fence rather than treating the old native nonce as a fresh connection.
+  const { coordinator: c, changes, timers, probes } = fixture();
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('play.example:30120', () => true).ok, true);
+  assert.equal(c.canAcceptAdmission(token), true);
+  assert.equal(c.nativeStage(token, 'active'), true);
+  assert.equal(c.canAcceptAdmission(token), false, 'active session cannot accept a late card');
+  assert.equal(c.requestCancel(() => true), true);
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.equal(c.probed(token, 'pending'), true);
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.equal(c.closed(token), true);
+  assert.equal(c.restore(token, 'play.example:30120', 'connected', true), true);
+  assert.equal(changes.at(-1).phase, 'native_closing');
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.deepEqual(probes.at(-1), token);
+  assert.equal(c.probed(token, 'active'), true);
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.equal(c.start('another.example:30120', () => true).reason, 'busy');
+  timers.values().next().value();
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.equal(c.probed(token, 'absent'), true);
+  assert.equal(c.active(), false);
+  assert.equal(c.restore(token, 'play.example:30120', 'pending', 'true'), false);
+  assert.equal(c.restore(token, 'play.example:30120', 'pending', false), true);
+  assert.equal(c.canAcceptAdmission(token), true);
+  assert.equal(c.terminating(token), true);
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.equal(c.probed(token, 'absent'), true);
+}
 console.log('PASS: native connection coordination, CEF reload recovery, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');
