@@ -328,7 +328,7 @@
         invoke('backfillDone');
         break;
       case 'connectCard':
-        if (!connection.owns(message.nonce)) break;
+        if (!connection.canAcceptAdmission(message.nonce)) break;
         if (!admission.present(message.nonce, message.data?.card, message.remainingMs ?? 60000)) {
           admission.dismiss();
           connection.requestCancel(nonce => invoke('openvCancelConnect', nonce));
@@ -336,7 +336,7 @@
         }
         break;
       case 'openvAdmissionCodeSubmitted':
-        if (connection.owns(message.nonce))
+        if (connection.canAcceptAdmission(message.nonce))
           toast('One-time join code forwarded to the game server. Awaiting admission.');
         break;
       case 'openvAdmissionRejected':
@@ -381,7 +381,7 @@
         break;
       case 'openvConnectionSnapshot':
         // Recover a transport that outlived this CEF frame, never rejoin it.
-        connection.restore(message.nonce, message.address, message.stage);
+        connection.restore(message.nonce, message.address, message.stage, message.cancelling === true);
         break;
       case 'openvConnectionProbe':
         connection.probed(message.nonce, message.state);
