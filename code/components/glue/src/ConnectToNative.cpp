@@ -237,6 +237,7 @@ void loadSettings() {
 
 NetLibrary* netLibrary;
 static bool g_connected;
+static bool g_openvDisconnectRequested;
 
 static_assert(NetLibrary::CS_IDLE == 0 && NetLibrary::CS_INITING == 1 &&
     NetLibrary::CS_INITRECEIVED == 2 && NetLibrary::CS_DOWNLOADING == 3 &&
@@ -248,6 +249,9 @@ static_assert(NetLibrary::CS_IDLE == 0 && NetLibrary::CS_INITING == 1 &&
 // An error, build switch or cancellation callback can precede native teardown.
 static void FinishOpenVConnectionIfIdle(const char* reason)
 {
+    // A terminal event may precede the engine's asynchronous IDLE state.
+    // Fence any late admission card and join-code submission immediately.
+    g_openvDisconnectRequested = true;
     const auto nonce = g_openvUIRequestNonce;
     // Retain replay tombstones while Disconnect() is still in progress.
     g_openvAdmissionCard.DropPending();
@@ -263,6 +267,7 @@ static void FinishOpenVConnectionIfIdle(const char* reason)
     }
     ClearOpenVAdmissionCard();
     g_connected = false;
+    g_openvDisconnectRequested = false;
     g_openvUIRequestNonce.clear();
     g_connectNonce.clear();
     if (openv::connection::ValidNonce(nonce))
@@ -332,6 +337,7 @@ static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 	}
 
 	ClearOpenVAdmissionCard();
+	g_openvDisconnectRequested = false;
 	g_connected = true;
 	if (!uiNonce.empty())
 	{
@@ -721,7 +727,8 @@ static InitFunction initFunction([] ()
 
 		netLibrary->OnConnectOKReceived.Connect([lib](NetAddress)
 		{
-			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
+			if (!openv::connection::IsCurrentLibrary(lib, netLibrary) ||
+				g_openvDisconnectRequested) return;
 			PostOpenVConnectionEvent("openvTransportConnected", g_openvUIRequestNonce);
 			auto peerAddress = netLibrary->GetCurrentPeer().ToString();
 
@@ -797,6 +804,9 @@ static InitFunction initFunction([] ()
 		netLibrary->OnConnectionCardPresent.Connect([lib](const std::string& card, const std::string& token)
 		{
 			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
+			if (!openv::connection::NativeAdmissionAllowed(g_connected,
+				g_openvDisconnectRequested, netLibrary != nullptr,
+				netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1)) return;
 			// Never expose the private Cfx card response token to the UI.
 			// Each card belongs to one live, nonce-bound native connection.
 			if (!openv::connection::ValidNonce(g_openvUIRequestNonce))
@@ -1188,7 +1198,8 @@ static InitFunction initFunction([] ()
 				{ "type", "openvConnectionSnapshot" },
 				{ "nonce", stage ? g_openvUIRequestNonce : "" },
 				{ "address", stage ? g_lastConn : "" },
-				{ "stage", stage ? stage : "absent" }
+				{ "stage", stage ? stage : "absent" },
+				{ "cancelling", g_openvDisconnectRequested }
 			});
 			nui::PostFrameMessage("mpMenu", snapshot.dump(-1, ' ', false,
 				nlohmann::detail::error_handler_t::replace));
@@ -1231,7 +1242,10 @@ static InitFunction initFunction([] ()
 				const auto nonce = request[0].get<std::string>();
 				const auto code = request[1].get<std::string>();
 				std::string cardToken;
-				if (!g_connected || !netLibrary || nonce != g_openvUIRequestNonce) return;
+				if (!openv::connection::NativeAdmissionAllowed(g_connected,
+					g_openvDisconnectRequested, netLibrary != nullptr,
+					netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1) ||
+					nonce != g_openvUIRequestNonce) return;
 				if (!g_openvAdmissionCard.Take(nonce, code, cardToken))
 				{
 					PostOpenVConnectionEvent("openvAdmissionRejected", nonce, "expired_or_invalid");
@@ -1253,6 +1267,7 @@ static InitFunction initFunction([] ()
 			if (!openv::connection::ValidNonce(nonce) || !g_connected ||
 				nonce != g_openvUIRequestNonce || !netLibrary) return;
 			// Retain the nonce and connection latch until Cfx reports IDLE.
+			g_openvDisconnectRequested = true;
 			// Disconnect may be asynchronous; a premature terminal event would
 			// unlock the UI while native transport remains alive.
 			ClearOpenVAdmissionCard();
