@@ -115,17 +115,20 @@
     // CEF can reload without ending NetLibrary. Adopt the existing native
     // nonce, then independently probe transport before trusting its state.
     // A restored request never dispatches a second ConnectToServer.
-    function restore(token, address, stage) {
+    function restore(token, address, stage, cancelling = false) {
       if (pending || typeof token !== 'string' || !/^[0-9a-f]{32}$/.test(token) ||
           typeof address !== 'string' || !address || address.length > 255 ||
           /[\x00-\x1f\x7f]/.test(address) ||
+          typeof cancelling !== 'boolean' ||
           (stage !== 'pending' && !Object.prototype.hasOwnProperty.call(NATIVE_STAGES, stage)))
         return false;
-      const request = { id: ++sequence, address, token, phase: 'checking',
-        timer: null, timerEpoch: 0, cancellationRequested: false, terminal: false };
+      const request = { id: ++sequence, address, token,
+        phase: cancelling ? 'native_closing' : 'checking',
+        timer: null, timerEpoch: 0, cancellationRequested: cancelling, terminal: cancelling };
       pending = request;
-      publish('checking', address);
-      if (!arm(request, PROBE_MS, () => checkNative(request))) unconfirmed(request);
+      publish(request.phase, address);
+      if (!arm(request, PROBE_MS, () => cancelling ? checkCancellation(request) : checkNative(request)))
+        unconfirmed(request);
       try { probe(token); } catch (_) { /* native gate remains locked */ }
       return true;
     }
@@ -215,6 +218,8 @@
     return Object.freeze({
       start, restore, active: () => pending !== null,
       owns: token => matching(token),
+      canAcceptAdmission: token => matching(token) && !pending.cancellationRequested &&
+        !pending.terminal && pending.phase !== 'native_active',
       accepted: token => progress('accepted', token),
       progress: token => progress('connecting', token),
       transport, nativeStage, probed, requestCancel, terminating,
