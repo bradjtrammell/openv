@@ -52,6 +52,16 @@ inline bool NativeClosureConfirmed(bool has_library, int native_state) noexcept
     return !has_library || native_state == 0;
 }
 
+// Admission cards are valid only during an owned, non-cancelling Cfx
+// handshake. Once transport is ACTIVE, a late card must not rearm a private
+// token. Neither CEF reload nor a deferred callback can undo cancellation.
+inline bool NativeAdmissionAllowed(bool connected, bool cancelling,
+                                   bool has_library, int native_state) noexcept
+{
+    return connected && !cancelling && has_library &&
+           native_state >= 1 && native_state <= 7;
+}
+
 // A CEF reload may recover the existing native nonce but cannot create one.
 // Pre-dispatch IDLE or unknown native states remain pending until probed.
 inline const char* NativeSnapshotStage(bool connected, bool valid_nonce,
