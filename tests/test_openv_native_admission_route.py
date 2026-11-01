@@ -26,6 +26,24 @@ class NativeAdmissionRouteTests(unittest.TestCase):
         self.assertIn('FinishOpenVConnectionIfIdle("native_idle")', SOURCE)
         self.assertIn("g_openvAdmissionCard.DropPending()", SOURCE)
 
+    def test_native_start_failure_requests_real_teardown(self):
+        start = SOURCE.index('const bool dispatched = openv::connection::DispatchNativeStart')
+        failure = SOURCE.index('if (!dispatched)', start)
+        end = SOURCE.index('return false;', failure)
+        section = SOURCE[failure:end]
+        self.assertIn('g_openvDisconnectRequested = true;', section)
+        self.assertIn('dispatchLibrary->Disconnect();', section)
+        self.assertIn('netLibrary == dispatchLibrary', section)
+        self.assertIn('FinishOpenVConnectionIfIdle("native_start_failed")', section)
+
+    def test_frame_reconciles_lost_native_idle_callback(self):
+        frame = SOURCE.index('OnGameFrame.Connect([]()')
+        end = SOURCE.index('Instance<ICoreGameInit>::Get()->OnGameRequestLoad', frame)
+        section = SOURCE[frame:end]
+        self.assertIn('ShouldFinalizeNativeClosure(', section)
+        self.assertIn('g_connected, g_openvDisconnectRequested', section)
+        self.assertIn('FinishOpenVConnectionIfIdle("native_idle_poll")', section)
+
     def test_async_disconnect_fences_native_admission(self):
         guard = "openv::connection::NativeAdmissionAllowed"
         card = SOURCE.index('OnConnectionCardPresent.Connect')

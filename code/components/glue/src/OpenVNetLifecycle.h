@@ -62,6 +62,16 @@ inline bool NativeAdmissionAllowed(bool connected, bool cancelling,
            native_state >= 1 && native_state <= 7;
 }
 
+// A missed or reentrant Cfx IDLE callback must not leave the NUI locked
+// indefinitely after a native disconnect. Never finalize while a live
+// transport is still tearing down, or when no disconnect was requested.
+inline bool ShouldFinalizeNativeClosure(bool connected, bool disconnect_requested,
+                                        bool has_library, int native_state) noexcept
+{
+    return connected && disconnect_requested &&
+           NativeClosureConfirmed(has_library, native_state);
+}
+
 // A CEF reload may recover the existing native nonce but cannot create one.
 // Pre-dispatch IDLE or unknown native states remain pending until probed.
 inline const char* NativeSnapshotStage(bool connected, bool valid_nonce,

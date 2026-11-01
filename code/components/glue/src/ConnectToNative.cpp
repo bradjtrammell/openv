@@ -354,21 +354,32 @@ static bool ConnectTo(const std::string& hostnameStr, bool fromUI = false, const
 
 	g_lastConn = hostnameStr;
 
+	// Bind dispatch to the library checked for readiness. Reentrant native
+	// callbacks may replace the global pointer during ConnectToServer.
+	auto* dispatchLibrary = netLibrary;
 	const bool dispatched = openv::connection::DispatchNativeStart([&]()
 	{
 		if (!hostnameStr.empty() && hostnameStr[0] == '-')
 		{
-			netLibrary->ConnectToServer("cfx.re/join/" + hostnameStr.substr(1));
+			dispatchLibrary->ConnectToServer("cfx.re/join/" + hostnameStr.substr(1));
 		}
 		else
 		{
-			netLibrary->ConnectToServer(hostnameStr);
+			dispatchLibrary->ConnectToServer(hostnameStr);
 		}
 	});
 	if (!dispatched)
 	{
-		// A synchronous failure may have partially initialized NetLibrary.
-		FinishOpenVConnectionIfIdle("native_start_failed");
+		// A synchronous exception may leave Cfx non-IDLE. Request actual
+		// teardown before waiting for IDLE, without touching a replacement.
+		g_openvDisconnectRequested = true;
+		if (netLibrary == dispatchLibrary)
+		{
+			try { dispatchLibrary->Disconnect(); }
+			catch (...) { trace("OpenV native start cleanup failed; waiting for IDLE\\n"); }
+			if (g_connected && netLibrary == dispatchLibrary)
+				FinishOpenVConnectionIfIdle("native_start_failed");
+		}
 		return false;
 	}
 	return true;
@@ -633,6 +644,15 @@ static InitFunction initFunction([] ()
 			if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 			netLibrary->Disconnect();
 			FinishOpenVConnectionIfIdle("admission_timeout");
+		}
+
+		// Reconcile a missed or reentrant Cfx IDLE event on the game frame.
+		// A live or unknown native state must remain locked.
+		if (openv::connection::ShouldFinalizeNativeClosure(
+			g_connected, g_openvDisconnectRequested, netLibrary != nullptr,
+			netLibrary ? static_cast<int>(netLibrary->GetConnectionState()) : -1))
+		{
+			FinishOpenVConnectionIfIdle("native_idle_poll");
 		}
 
 		ep.RunFrame();

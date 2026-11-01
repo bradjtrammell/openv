@@ -42,6 +42,18 @@ int main()
     assert(NativeClosureConfirmed(true, 0));
     for (int state : {-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1000})
         assert(!NativeClosureConfirmed(true, state));
+    using openv::connection::ShouldFinalizeNativeClosure;
+    assert(ShouldFinalizeNativeClosure(true, true, true, 0));
+    assert(ShouldFinalizeNativeClosure(true, true, false, -1));
+    assert(ShouldFinalizeNativeClosure(true, true, false, 8));
+    for (int state : {-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1000})
+        assert(!ShouldFinalizeNativeClosure(true, true, true, state));
+    for (int state = -1; state <= 9; ++state)
+    {
+        assert(!ShouldFinalizeNativeClosure(false, true, true, state));
+        assert(!ShouldFinalizeNativeClosure(true, false, true, state));
+    }
+    assert(!ShouldFinalizeNativeClosure(true, false, false, -1));
     using openv::connection::NativeProbeState;
     assert(std::string_view(NativeProbeState(false, false, -1, false)) == "absent");
     assert(std::string_view(NativeProbeState(false, true, 0, true)) == "absent");
