@@ -42,6 +42,26 @@ class NativeAdmissionRouteTests(unittest.TestCase):
             SOURCE.index('static void FinishOpenVConnectionIfIdle'):
             SOURCE.index('static void UpdatePendingAuthPayload')])
 
+    def test_all_native_terminal_paths_fence_reentrant_card_callbacks(self):
+        for start, end in [
+            ('static void DisconnectCmd()', 'OnKillNetwork("Disconnected.")'),
+            ('g_openvAdmissionCard.Expired()', 'netLibrary->Disconnect();'),
+            ('OnRequestBuildSwitch.Connect', 'InitializeBuildSwitch('),
+            ('OnConnectionErrorRichEvent.Connect', 'std::string error = errorOrig;'),
+            ('Legacy connection cards are unsupported', 'netLibrary->Disconnect();'),
+            ('FinishOpenVConnectionIfIdle("admission_card_unavailable")',
+             'FinishOpenVConnectionIfIdle("admission_card_unavailable")'),
+            ('OnKillNetwork.Connect', 'FinishOpenVConnectionIfIdle("network_closed")'),
+            ('resevman->TriggerEvent2("disconnecting"', 'OnKillNetwork("Disconnected.")'),
+            ('L"cancelDefer"', 'netLibrary->Disconnect();'),
+        ]:
+            with self.subTest(path=start):
+                begin = SOURCE.index(start)
+                finish = SOURCE.index(end, begin)
+                if start == 'FinishOpenVConnectionIfIdle("admission_card_unavailable")':
+                    begin = SOURCE.rfind('g_openvAdmissionCard.DropPending()', 0, finish)
+                self.assertIn('g_openvDisconnectRequested = true;', SOURCE[begin:finish])
+
     def test_legacy_card_is_rejected_not_submitted(self):
         self.assertIn('FinishOpenVConnectionIfIdle("legacy_card_unsupported")', SOURCE)
         self.assertIn('L"submitCardResponse"', SOURCE)
