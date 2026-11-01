@@ -53,6 +53,15 @@ int main()
     assert(std::string_view(NativeProbeState(true, true, 8, false)) == "other");
     assert(std::string_view(NativeProbeState(true, true, 8, true)) == "active");
     assert(std::string_view(NativeProbeState(true, true, 7, true)) == "pending");
+    using openv::connection::NativeAdmissionAllowed;
+    for (int state = -1; state <= 9; ++state)
+    {
+        const bool allowed = state >= 1 && state <= 7;
+        assert(NativeAdmissionAllowed(true, false, true, state) == allowed);
+        assert(!NativeAdmissionAllowed(false, false, true, state));
+        assert(!NativeAdmissionAllowed(true, true, true, state));
+        assert(!NativeAdmissionAllowed(true, false, false, state));
+    }
     using openv::connection::NativeSnapshotStage;
     assert(std::string_view(NativeSnapshotStage(true, true, true, 8)) == "active");
     assert(std::string_view(NativeSnapshotStage(true, true, true, 3)) == "downloading");
