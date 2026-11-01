@@ -26,6 +26,22 @@ class NativeAdmissionRouteTests(unittest.TestCase):
         self.assertIn('FinishOpenVConnectionIfIdle("native_idle")', SOURCE)
         self.assertIn("g_openvAdmissionCard.DropPending()", SOURCE)
 
+    def test_async_disconnect_fences_native_admission(self):
+        guard = "openv::connection::NativeAdmissionAllowed"
+        card = SOURCE.index('OnConnectionCardPresent.Connect')
+        arm = SOURCE.index('g_openvAdmissionCard.Arm(nonce, token)', card)
+        self.assertIn(guard, SOURCE[card:arm])
+        submit = SOURCE.index('L"openvSubmitJoinCode"')
+        take = SOURCE.index('g_openvAdmissionCard.Take(nonce, code, cardToken)', submit)
+        self.assertIn(guard, SOURCE[submit:take])
+        cancel = SOURCE.index('L"openvCancelConnect"')
+        disconnect = SOURCE.index('netLibrary->Disconnect();', cancel)
+        self.assertIn('g_openvDisconnectRequested = true;', SOURCE[cancel:disconnect])
+        self.assertIn('{ "cancelling", g_openvDisconnectRequested }', SOURCE)
+        self.assertIn('g_openvDisconnectRequested = true;', SOURCE[
+            SOURCE.index('static void FinishOpenVConnectionIfIdle'):
+            SOURCE.index('static void UpdatePendingAuthPayload')])
+
     def test_legacy_card_is_rejected_not_submitted(self):
         self.assertIn('FinishOpenVConnectionIfIdle("legacy_card_unsupported")', SOURCE)
         self.assertIn('L"submitCardResponse"', SOURCE)
