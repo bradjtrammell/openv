@@ -701,11 +701,8 @@ class BrowserUITests(unittest.TestCase):
         self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
         self.assertFalse(self.page.locator('#connection-cancel').is_hidden())
         self.assertIn(['openvConnectionProbe', nonce], self.page.evaluate('window.__calls'))
-        self.page.evaluate("""(nonce) => window.postMessage({
-            type: 'openvConnectionProbe', nonce, state: 'active'
-        }, '*')""", nonce)
-        self.page.wait_for_timeout(100)
-        self.assertIn('network session is active', self.page.locator('#connection-state').inner_text())
+        # Admission happens during native handshake, not after CS_ACTIVE.
+        # An active Cfx transport must not accept a new bearer card.
         self.page.evaluate("""(nonce) => window.postMessage({
             type: 'connectCard', nonce, remainingMs: 20000,
             data: {card: JSON.stringify({
@@ -726,10 +723,71 @@ class BrowserUITests(unittest.TestCase):
                       self.page.evaluate('window.__calls'))
         self.assertTrue(self.page.locator('#admission-dialog').is_hidden())
         self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionProbe', nonce, state: 'active'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertIn('network session is active', self.page.locator('#connection-state').inner_text())
+        # The server may deliver a late card after admission; it must not
+        # reactivate the one-time credential dialog after native ACTIVE.
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'connectCard', nonce, remainingMs: 20000,
+            data: {card: JSON.stringify({
+                type: 'AdaptiveCard', version: '1.0',
+                body: [
+                    {type:'TextBlock',text:'Connect to OpenV'},
+                    {type:'TextBlock',text:'Enter the one-time game connection code.'},
+                    {type:'Input.Text',id:'join_code',maxLength:43}
+                ],
+                actions: [{type:'Action.Submit',title:'Join server'}]
+            })}
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(el) => el.open'))
+        self.page.evaluate("""(nonce) => window.postMessage({
             type: 'openvConnectClosed', nonce, reason: 'native_idle'
         }, '*')""", nonce)
         self.page.wait_for_timeout(100)
         self.assertFalse(self.page.locator('#connect-form button[type=submit]').is_disabled())
+
+
+    def test_cef_reload_during_disconnect_rejects_late_join_code(self):
+        self.load()
+        nonce = 'b' * 32
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionSnapshot', nonce,
+            address: 'play.example.org:30120', stage: 'connected',
+            cancelling: true
+        }, '*')""", nonce)
+        self.page.wait_for_function(
+            "() => document.querySelector('#connection-state').textContent.includes('ending')")
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertIn(['openvConnectionProbe', nonce], self.page.evaluate('window.__calls'))
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'connectCard', nonce, remainingMs: 20000,
+            data: {card: JSON.stringify({
+                type:'AdaptiveCard', version:'1.0',
+                body: [
+                    {type:'TextBlock',text:'Connect to OpenV'},
+                    {type:'TextBlock',text:'Enter a one-time code.'},
+                    {type:'Input.Text',id:'join_code',maxLength:43}
+                ],
+                actions:[{type:'Action.Submit',title:'Join server'}]
+            })}
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(el) => el.open'))
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionProbe', nonce, state: 'active'
+        }, '*')""", nonce)
+        self.page.wait_for_timeout(100)
+        self.assertTrue(self.page.locator('#connect-form button[type=submit]').is_disabled())
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(el) => el.open'))
+        self.page.evaluate("""(nonce) => window.postMessage({
+            type: 'openvConnectionProbe', nonce, state: 'absent'
+        }, '*')""", nonce)
+        self.page.wait_for_function(
+            "() => !document.querySelector('#connect-form button[type=submit]').disabled")
+        self.assertFalse(self.page.locator('#admission-dialog').evaluate('(el) => el.open'))
 
 
 if __name__ == '__main__':
