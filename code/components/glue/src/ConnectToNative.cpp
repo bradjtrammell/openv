@@ -580,6 +580,7 @@ static void DisconnectCmd()
 {
 	if (netLibrary->GetConnectionState() != 0)
 	{
+		g_openvDisconnectRequested = true;
 		OnKillNetwork("Disconnected.");
 		OnMsgConfirm();
 	}
@@ -628,6 +629,7 @@ static InitFunction initFunction([] ()
 			g_openvAdmissionCard.DropPending();
 			g_openvCardMarkup.clear();
 			PostOpenVConnectionEvent("openvAdmissionRejected", nonce, "expired");
+			g_openvDisconnectRequested = true;
 			if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 			netLibrary->Disconnect();
 			FinishOpenVConnectionIfIdle("admission_timeout");
@@ -738,6 +740,7 @@ static InitFunction initFunction([] ()
 		netLibrary->OnRequestBuildSwitch.Connect([lib](int build, int pureLevel, std::wstring poolSizesIncreaseSetting, int defaultBuild)
 		{
 			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
+			g_openvDisconnectRequested = true;
 			InitializeBuildSwitch(build, pureLevel, std::move(poolSizesIncreaseSetting), defaultBuild);
 			FinishOpenVConnectionIfIdle("build_switch");
 		});
@@ -745,6 +748,7 @@ static InitFunction initFunction([] ()
 		netLibrary->OnConnectionErrorRichEvent.Connect([lib] (const std::string& errorOrig, const std::string& metaData)
 		{
 			if (!openv::connection::IsCurrentLibrary(lib, netLibrary)) return;
+			g_openvDisconnectRequested = true;
 			std::string error = errorOrig;
 
 			if ((strstr(error.c_str(), "steam") || strstr(error.c_str(), "Steam")) && !strstr(error.c_str(), ".ms/verify"))
@@ -814,6 +818,7 @@ static InitFunction initFunction([] ()
 				// Do not retain a legacy bearer or permit a generic CEF card
 				// response to bypass the first-party signed-session flow.
 				ep.Call("connectionError", std::string("Legacy connection cards are unsupported"));
+				g_openvDisconnectRequested = true;
 				if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 				netLibrary->Disconnect();
 				FinishOpenVConnectionIfIdle("legacy_card_unsupported");
@@ -830,6 +835,7 @@ static InitFunction initFunction([] ()
 			{
 				g_openvAdmissionCard.DropPending();
 				g_openvCardMarkup.clear();
+				g_openvDisconnectRequested = true;
 				if (!XBR_InterceptCancelDefer()) netLibrary->CancelDeferredConnection();
 				netLibrary->Disconnect();
 				FinishOpenVConnectionIfIdle("admission_card_unavailable");
@@ -910,6 +916,7 @@ static InitFunction initFunction([] ()
 
 	OnKillNetwork.Connect([](const char*)
 	{
+		g_openvDisconnectRequested = true;
 		FinishOpenVConnectionIfIdle("network_closed");
 		SetShellIcon("");
 	});
@@ -1043,6 +1050,7 @@ static InitFunction initFunction([] ()
 
 			resevman->TriggerEvent2("disconnecting", {});
 
+			g_openvDisconnectRequested = true;
 			OnKillNetwork("Disconnected.");
 			OnMsgConfirm();
 		}
@@ -1280,6 +1288,7 @@ static InitFunction initFunction([] ()
 		}
 		else if (!_wcsicmp(type, L"cancelDefer"))
 		{
+			g_openvDisconnectRequested = true;
 			if (!XBR_InterceptCancelDefer())
 			{
 				netLibrary->CancelDeferredConnection();
