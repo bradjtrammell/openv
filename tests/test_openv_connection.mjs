@@ -602,4 +602,38 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
     assert.equal(timers.size, state === 'pending' ? 1 : 0);
   }
 }
+
+{
+  // Even a UI state observer can be reentrant. A native callback delivered
+  // while the uncertain-dispatch state is being published must keep its own
+  // watchdog; the dispatch probe must not cancel it or overwrite its phase.
+  for (const event of ['accepted', 'terminating']) {
+    const timers = new Map(), changes = [];
+    let next = 0, c;
+    const token = 'ab'.repeat(16);
+    c = create({
+      crypto: { getRandomValues(bytes) { bytes.fill(0xab); return bytes; } },
+      schedule(fn, ms) {
+        const id = ++next;
+        timers.set(id, { ms, fn: () => { timers.delete(id); fn(); } });
+        return id;
+      },
+      cancel(id) { timers.delete(id); },
+      onChange(s) {
+        changes.push(s);
+        if (s.phase === 'dispatch_unconfirmed')
+          assert.equal(c[event](token), true);
+      },
+      probe() { throw Error('probe should not replace the native watchdog'); },
+    });
+    const result = c.start('play.example:30120', () => false);
+    assert.equal(result.ok, event === 'accepted');
+    assert.equal(c.active(), true);
+    assert.equal(changes.at(-1).phase, event === 'accepted' ? 'accepted' : 'native_closing');
+    assert.equal(timers.size, 1);
+    assert.equal([...timers.values()][0].ms, event === 'accepted' ? WAIT_MS : PROBE_MS);
+    assert.equal(c.closed(token), true);
+    assert.equal(timers.size, 0);
+  }
+}
 console.log('PASS: native connection coordination, CEF reload recovery, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');

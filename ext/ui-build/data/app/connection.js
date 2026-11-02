@@ -82,7 +82,10 @@
           !['requested', 'dispatch_unconfirmed'].includes(request.phase)) return;
       request.phase = 'dispatch_unconfirmed';
       publish('dispatch_unconfirmed', request.address);
-      if (pending !== request) return; // onChange can be reentrant
+      // UI observers may synchronously deliver a native result or request a
+      // disconnect. Do not replace the new native watchdog with our retry.
+      if (pending !== request || request.phase !== 'dispatch_unconfirmed' ||
+          request.cancellationRequested || request.terminal) return;
       if (!arm(request, PROBE_MS, () => checkDispatch(request))) return;
       try { probe(request.token); } catch (_) { /* keep probing for native IDLE */ }
     }
@@ -136,8 +139,8 @@
         checkDispatch(request);
         if (pending !== request || request.cancellationRequested || request.terminal)
           return { ok: false, reason: 'dispatch' };
-        if (request.phase === 'native_active' || request.phase === 'native_pending')
-          return { ok: true };
+        if (request.phase !== 'dispatch_unconfirmed')
+          return { ok: true }; // synchronous native result is authoritative
         return { ok: false, reason: 'dispatch' };
       }
       // An authoritative synchronous native callback wins over a false or
