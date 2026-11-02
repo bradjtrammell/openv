@@ -426,7 +426,7 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
       const token = 'ab'.repeat(16);
       c = create({
         crypto: { getRandomValues(bytes) { bytes.fill(0xab); return bytes; } },
-        schedule(fn) { const id = ++sequence; timers.set(id, fn); return id; },
+        schedule(fn) { const id = ++sequence; timers.set(id, () => { timers.delete(id); fn(); }); return id; },
         cancel(id) { timers.delete(id); },
         onChange(s) { changes.push(s); },
         probe(nonce) {
