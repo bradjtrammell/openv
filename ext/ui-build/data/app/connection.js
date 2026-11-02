@@ -82,8 +82,16 @@
         unconfirmed(request);
         return;
       }
-      try { if (probe(request.token) !== true) { clear(request); unconfirmed(request); } }
-      catch (_) { clear(request); unconfirmed(request); }
+      // Native probes may answer synchronously. Never overwrite an ACTIVE,
+      // PENDING or CLOSED result just because the bridge returned false (or
+      // threw after publishing the authoritative response).
+      let dispatched = false;
+      try { dispatched = probe(request.token) === true; }
+      catch (_) { /* the native response may already have been delivered */ }
+      if (!dispatched && pending === request && request.phase === 'checking') {
+        clear(request);
+        unconfirmed(request);
+      }
     }
     function nonce() {
       if (!crypto || typeof crypto.getRandomValues !== 'function') return null;
@@ -205,11 +213,21 @@
     function requestCancel(dispatch) {
       if (!pending || typeof dispatch !== 'function' || pending.phase === 'cancel_requested') return false;
       const request = pending;
+      // The native bridge may synchronously deliver progress, an admission
+      // card or a terminal event before returning. Fence all such callbacks
+      // before invoking it, including when the dispatch ultimately fails.
+      request.cancellationRequested = true;
       let sent = false;
       try { sent = dispatch(request.token) === true; } catch (_) { /* bridge failed */ }
       if (pending !== request) return sent;
-      if (!sent) { unconfirmed(request); return false; }
-      request.cancellationRequested = true;
+      if (request.terminal) return sent;
+      if (!sent) {
+        // A failed dispatch is not proof that native transport is idle.
+        // Preserve the fence, allow an explicit retry, and probe for closure.
+        unconfirmed(request);
+        if (!arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);
+        return false;
+      }
       request.phase = 'cancel_requested';
       publish('cancel_requested', request.address);
       if (!arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);

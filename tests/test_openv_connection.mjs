@@ -415,4 +415,81 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.canAcceptAdmission(token), false);
   assert.equal(c.probed(token, 'absent'), true);
 }
+{
+  // A synchronous native response is authoritative even if the bridge
+  // subsequently returns false or throws. Do not replace ACTIVE with an
+  // unconfirmed UI state or destroy a newly armed pending probe.
+  for (const state of ['active', 'pending']) {
+    for (const mode of ['false', 'throw']) {
+      const timers = new Map(), changes = [];
+      let sequence = 0, c;
+      const token = 'ab'.repeat(16);
+      c = create({
+        crypto: { getRandomValues(bytes) { bytes.fill(0xab); return bytes; } },
+        schedule(fn) { const id = ++sequence; timers.set(id, fn); return id; },
+        cancel(id) { timers.delete(id); },
+        onChange(s) { changes.push(s); },
+        probe(nonce) {
+          assert.equal(nonce, token);
+          assert.equal(c.probed(nonce, state), true);
+          if (mode === 'throw') throw Error('bridge returned after callback');
+          return false;
+        },
+      });
+      assert.equal(c.start('play.example:30120', () => true).ok, true);
+      const watchdog = timers.values().next().value;
+      watchdog();
+      assert.equal(changes.at(-1).phase, state === 'active' ? 'native_active' : 'native_pending',
+        'synchronous native response was overwritten by bridge failure');
+      assert.equal(c.active(), true);
+      assert.equal(timers.size, state === 'active' ? 0 : 1);
+      assert.equal(c.closed(token), true);
+      assert.equal(timers.size, 0);
+    }
+  }
+}
+{
+  // Cancellation must fence reentrant native progress and admission BEFORE
+  // calling the bridge. A failed dispatch is not native closure, and an
+  // explicit retry remains possible without accepting another card.
+  const { coordinator: c, timers, changes } = fixture();
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('play.example:30120', () => true).ok, true);
+  assert.equal(c.requestCancel(nonce => {
+    assert.equal(nonce, token);
+    assert.equal(c.canAcceptAdmission(nonce), false);
+    assert.equal(c.nativeStage(nonce, 'active'), false);
+    assert.equal(c.accepted(nonce), false);
+    assert.equal(c.transport(nonce), false);
+    return false;
+  }), false);
+  assert.equal(changes.at(-1).phase, 'unconfirmed');
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.equal(c.active(), true);
+  assert.equal(timers.size, 1, 'failed native cancel must retain a closure probe');
+  assert.equal(c.requestCancel(nonce => {
+    assert.equal(c.canAcceptAdmission(nonce), false);
+    return true;
+  }), true);
+  assert.equal(changes.at(-1).phase, 'cancel_requested');
+  assert.equal(c.probed(token, 'active'), true);
+  assert.equal(changes.at(-1).phase, 'cancel_requested');
+  assert.equal(c.closed(token), true);
+  assert.equal(timers.size, 0);
+}
+{
+  // A synchronous native terminal callback must not be downgraded by the
+  // returning cancellation dispatch.
+  const { coordinator: c, changes } = fixture();
+  const token = 'ab'.repeat(16);
+  assert.equal(c.start('play.example:30120', () => true).ok, true);
+  assert.equal(c.requestCancel(nonce => {
+    assert.equal(c.terminating(nonce), true);
+    return true;
+  }), true);
+  assert.equal(changes.at(-1).phase, 'native_closing');
+  assert.equal(c.canAcceptAdmission(token), false);
+  assert.equal(c.probed(token, 'absent'), true);
+  assert.equal(c.active(), false);
+}
 console.log('PASS: native connection coordination, CEF reload recovery, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');
