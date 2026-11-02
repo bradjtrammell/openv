@@ -527,14 +527,14 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
 {
   // An ambiguous dispatch without native callbacks keeps checking, including
   // when a probe throws, until the native side proves the transport is gone.
-  let counter = 0;
+  let tokenCounter = 0, timerCounter = 0;
   const timers = new Map(), changes = [], probes = [];
   let c;
   c = create({
-    crypto: { getRandomValues(bytes) { bytes.fill(++counter); return bytes; } },
+    crypto: { getRandomValues(bytes) { bytes.fill(++tokenCounter); return bytes; } },
     schedule(fn, ms) {
       assert.equal(ms === PROBE_MS || ms === WAIT_MS, true);
-      const id = ++counter;
+      const id = ++timerCounter;
       timers.set(id, () => { timers.delete(id); fn(); });
       return id;
     },
