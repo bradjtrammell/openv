@@ -66,6 +66,7 @@
       connecting: `Connecting to ${address}. Game ownership and multiplayer are not yet verified.`,
       failed: 'The native client reported a connection failure. You may retry.',
       checking: 'Checking native transport state after delayed connection events…',
+      dispatch_unconfirmed: 'Native dispatch outcome is uncertain. Checking Cfx transport before another connection can start…',
       native_active: 'Cfx network session is active. FXServer gameplay admission, player entities and resource execution are not yet verified.',
       native_pending: 'Native connection remains in progress. Checking again in five seconds.',
       native_initializing: 'Native client is initializing the server connection.',
@@ -197,7 +198,7 @@
         busy: 'A native connection request is already pending. Wait for its result.',
         crypto: 'Secure connection initialization is unavailable. Restart OpenV and try again.',
         timer: 'The client cannot monitor this connection request. Restart OpenV.',
-        dispatch: 'The native client could not accept the connection request.',
+        dispatch: 'Native dispatch could not be confirmed. Checking transport state before another attempt.',
       };
       toast(errors[result.reason] || 'Unable to request this connection.');
       return false;

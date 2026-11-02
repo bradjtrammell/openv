@@ -97,10 +97,16 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
 {
   const { coordinator: c, timers, changes } = fixture();
   assert.equal(c.start('a:1', () => false).reason, 'dispatch');
+  assert.equal(c.active(), true, 'ambiguous dispatch cannot unlock native transport');
+  assert.equal(timers.size, 1, 'uncertain dispatch must retry native probes');
+  assert.equal(changes.at(-1).phase, 'dispatch_unconfirmed');
+  assert.equal(c.start('a:1', () => true).reason, 'busy');
+  assert.equal(c.probed('ab'.repeat(16), 'absent'), true);
   assert.equal(c.active(), false);
   assert.equal(timers.size, 0);
-  assert.equal(changes.at(-1).phase, 'dispatch_failed');
   assert.equal(c.start('a:1', () => { throw Error('native'); }).reason, 'dispatch');
+  assert.equal(c.active(), true, 'throwing bridge may have dispatched');
+  assert.equal(c.probed('ab'.repeat(16), 'other'), true);
   assert.equal(c.start('a:1', () => true).ok, true);
   assert.equal(c.dispose(), true);
   assert.equal(c.active(), false);
@@ -491,5 +497,109 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
   assert.equal(c.canAcceptAdmission(token), false);
   assert.equal(c.probed(token, 'absent'), true);
   assert.equal(c.active(), false);
+}
+
+{
+  // Native acceptance can be delivered *inside* dispatch before the bridge
+  // returns false or throws. It must retain the native watchdog and gate.
+  for (const phase of ['accepted', 'transport', 'native_pending', 'native_active']) {
+    for (const mode of ['false', 'throw']) {
+      const { coordinator: c, changes, timers } = fixture();
+      const token = 'ab'.repeat(16);
+      const result = c.start('play.example:30120', (_, nonce) => {
+        assert.equal(nonce, token);
+        if (phase === 'accepted') assert.equal(c.accepted(nonce), true);
+        else if (phase === 'transport') assert.equal(c.transport(nonce), true);
+        else assert.equal(c.probed(nonce, phase === 'native_pending' ? 'pending' : 'active'), true);
+        if (mode === 'throw') throw Error('bridge threw after native callback');
+        return false;
+      });
+      assert.equal(result.ok, true, 'native callback wins over bridge ' + mode);
+      assert.equal(c.active(), true);
+      assert.equal(changes.at(-1).phase, phase);
+      assert.equal(timers.size, ['transport', 'native_active'].includes(phase) ? 0 : 1);
+      assert.equal(c.canAcceptAdmission(token), phase !== 'native_active');
+      assert.equal(c.closed(token), true);
+      assert.equal(timers.size, 0);
+    }
+  }
+}
+{
+  // An ambiguous dispatch without native callbacks keeps checking, including
+  // when a probe throws, until the native side proves the transport is gone.
+  let counter = 0;
+  const timers = new Map(), changes = [], probes = [];
+  let c;
+  c = create({
+    crypto: { getRandomValues(bytes) { bytes.fill(++counter); return bytes; } },
+    schedule(fn, ms) {
+      assert.equal(ms === PROBE_MS || ms === WAIT_MS, true);
+      const id = ++counter;
+      timers.set(id, () => { timers.delete(id); fn(); });
+      return id;
+    },
+    cancel(id) { timers.delete(id); },
+    onChange(s) { changes.push(s); },
+    probe(nonce) { probes.push(nonce); throw Error('native bridge temporarily unavailable'); },
+  });
+  const old = '01'.repeat(16);
+  assert.equal(c.start('first.example:30120', () => false).reason, 'dispatch');
+  assert.deepEqual(probes, [old]);
+  assert.equal(c.start('next.example:30120', () => true).reason, 'busy');
+  const stale = timers.values().next().value;
+  stale();
+  assert.deepEqual(probes, [old, old]);
+  assert.equal(changes.at(-1).phase, 'dispatch_unconfirmed');
+  assert.equal(c.probed(old, 'active'), true);
+  assert.equal(changes.at(-1).phase, 'native_active');
+  assert.equal(timers.size, 0);
+  assert.equal(c.requestCancel(() => true), true);
+  assert.equal(c.probed(old, 'absent'), true);
+  assert.equal(c.start('next.example:30120', () => true).ok, true);
+  stale();
+  assert.equal(c.active(), true, 'stale failed-dispatch probe cannot release new nonce');
+  assert.equal(c.owns('02'.repeat(16)), true);
+}
+{
+  // Synchronous native rejection/closure must not resurrect a finished
+  // request even if dispatch later reports success or failure.
+  for (const mode of ['false', 'true', 'throw']) {
+    for (const terminal of ['rejected', 'closed']) {
+      const { coordinator: c, changes } = fixture();
+      const token = 'ab'.repeat(16);
+      const result = c.start('play.example:30120', (_, nonce) => {
+        assert.equal(c[terminal](nonce), true);
+        if (mode === 'throw') throw Error('late bridge error');
+        return mode === 'true';
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'native');
+      assert.equal(changes.at(-1).phase, terminal);
+      assert.equal(c.active(), false);
+      assert.equal(c.start('next.example:30120', () => true).ok, true);
+      assert.equal(c.closed(token), true);
+    }
+  }
+}
+{
+  // If a false dispatch triggers a synchronous native probe, that response
+  // is authoritative: ACTIVE/PENDING retain the gate, ABSENT releases it.
+  for (const state of ['active', 'pending', 'absent']) {
+    const timers = new Map(), changes = [];
+    let next = 0, c;
+    const token = 'ab'.repeat(16);
+    c = create({
+      crypto: { getRandomValues(bytes) { bytes.fill(0xab); return bytes; } },
+      schedule(fn) { const id = ++next; timers.set(id, () => { timers.delete(id); fn(); }); return id; },
+      cancel(id) { timers.delete(id); },
+      onChange(s) { changes.push(s); },
+      probe(nonce) { assert.equal(c.probed(nonce, state), true); return false; },
+    });
+    const result = c.start('play.example:30120', () => false);
+    assert.equal(result.ok, state !== 'absent');
+    assert.equal(c.active(), state !== 'absent');
+    assert.equal(changes.at(-1).phase, state === 'absent' ? 'closed' : 'native_' + state);
+    assert.equal(timers.size, state === 'pending' ? 1 : 0);
+  }
 }
 console.log('PASS: native connection coordination, CEF reload recovery, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');

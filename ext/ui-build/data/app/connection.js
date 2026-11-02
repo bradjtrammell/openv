@@ -74,6 +74,18 @@
       request.phase = 'unconfirmed';
       publish('unconfirmed', request.address);
     }
+    // A bridge exception or false return is not evidence of native IDLE.
+    // Probe until the native side reports an absent/different connection or
+    // independently reports a live stage. Never unlock merely on dispatch.
+    function checkDispatch(request) {
+      if (pending !== request || request.cancellationRequested || request.terminal ||
+          !['requested', 'dispatch_unconfirmed'].includes(request.phase)) return;
+      request.phase = 'dispatch_unconfirmed';
+      publish('dispatch_unconfirmed', request.address);
+      if (pending !== request) return; // onChange can be reentrant
+      if (!arm(request, PROBE_MS, () => checkDispatch(request))) return;
+      try { probe(request.token); } catch (_) { /* keep probing for native IDLE */ }
+    }
     function checkNative(request) {
       if (pending !== request || request.phase === 'transport' || request.phase === 'native_active' || request.phase === 'cancel_requested') return;
       request.phase = 'checking';
@@ -114,9 +126,22 @@
         return { ok: false, reason: 'timer' };
       }
       let sent = false;
-      try { sent = dispatch(address, token) === true; } catch (_) { /* bridge failed */ }
-      if (!sent) { release('dispatch_failed'); return { ok: false, reason: 'dispatch' }; }
-      if (pending !== request) return { ok: false, reason: 'native' };
+      try { sent = dispatch(address, token) === true; } catch (_) { /* bridge may already have dispatched */ }
+      if (pending !== request || request.cancellationRequested || request.terminal)
+        return { ok: false, reason: 'native' };
+      if (!sent && request.phase === 'requested') {
+        // The native bridge can throw after sending the request, and a native
+        // callback can arrive synchronously during the dispatch. An uncertain
+        // dispatch must be reconciled with native state before another join.
+        checkDispatch(request);
+        if (pending !== request || request.cancellationRequested || request.terminal)
+          return { ok: false, reason: 'dispatch' };
+        if (request.phase === 'native_active' || request.phase === 'native_pending')
+          return { ok: true };
+        return { ok: false, reason: 'dispatch' };
+      }
+      // An authoritative synchronous native callback wins over a false or
+      // throwing bridge return. Its watchdog and connection gate stay intact.
       if (request.phase === 'requested') publish('requested', address);
       return { ok: true };
     }
