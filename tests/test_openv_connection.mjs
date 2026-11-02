@@ -636,4 +636,57 @@ function fixture(crypto = { getRandomValues(bytes) { bytes.fill(0xab); return by
     assert.equal(timers.size, 0);
   }
 }
+
+{
+  // Native callbacks may arrive synchronously from a UI state observer. A
+  // stale outer transition must not replace the newer native timer or issue
+  // an unnecessary probe after native ACTIVE or CLOSED.
+  for (const scenario of ['checking', 'accepted', 'native_connected', 'native_pending', 'restore']) {
+    const timers = new Map(), changes = [], probes = [];
+    let next = 0, c, injected = false;
+    const token = 'ab'.repeat(16);
+    c = create({
+      crypto: { getRandomValues(bytes) { bytes.fill(0xab); return bytes; } },
+      schedule(fn, ms) {
+        const id = ++next;
+        timers.set(id, { ms, fn: () => { timers.delete(id); fn(); } });
+        return id;
+      },
+      cancel(id) { timers.delete(id); },
+      onChange(s) {
+        changes.push(s);
+        const target = scenario === 'checking' ? 'checking' :
+          scenario === 'accepted' ? 'accepted' :
+          scenario === 'native_connected' ? 'native_connected' :
+          scenario === 'native_pending' ? 'native_pending' : 'checking';
+        if (s.phase !== target || injected) return;
+        injected = true;
+        if (scenario === 'native_connected') assert.equal(c.terminating(token), true);
+        else if (scenario === 'restore') assert.equal(c.closed(token), true);
+        else assert.equal(c.nativeStage(token, 'active'), true);
+      },
+      probe(nonce) { probes.push(nonce); return true; },
+    });
+    if (scenario === 'restore') {
+      assert.equal(c.restore(token, 'play.example:30120', 'pending'), true);
+      assert.equal(c.active(), false);
+      assert.equal(timers.size, 0, 'restored request was closed during publication');
+    } else {
+      assert.equal(c.start('play.example:30120', () => true).ok, true);
+      if (scenario === 'checking') timers.values().next().value.fn();
+      if (scenario === 'accepted') assert.equal(c.accepted(token), true);
+      if (scenario === 'native_connected') assert.equal(c.nativeStage(token, 'connected'), true);
+      if (scenario === 'native_pending') assert.equal(c.probed(token, 'pending'), true);
+      assert.equal(c.active(), true);
+      assert.equal(changes.at(-1).phase,
+        scenario === 'native_connected' ? 'native_closing' : 'native_active');
+      assert.equal(timers.size, scenario === 'native_connected' ? 1 : 0);
+      if (scenario === 'native_connected')
+        assert.equal([...timers.values()][0].ms, PROBE_MS);
+      assert.equal(c.closed(token), true);
+    }
+    assert.equal(timers.size, 0);
+    assert.equal(probes.length, 0, 'outer transition must not probe after reentrant result');
+  }
+}
 console.log('PASS: native connection coordination, CEF reload recovery, nonce, duplicate fencing, phase-fenced timers, native stage order and asynchronous teardown recovery');

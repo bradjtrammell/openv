@@ -66,6 +66,8 @@
       // asynchronous, and a single lost probe must not strand the UI forever.
       request.phase = 'unconfirmed';
       publish('unconfirmed', request.address);
+      if (pending !== request || request.phase !== 'unconfirmed' ||
+          !request.cancellationRequested) return;
       if (!arm(request, PROBE_MS, () => checkCancellation(request))) return;
       try { probe(request.token); } catch (_) { /* retry on the next probe */ }
     }
@@ -93,6 +95,8 @@
       if (pending !== request || request.phase === 'transport' || request.phase === 'native_active' || request.phase === 'cancel_requested') return;
       request.phase = 'checking';
       publish('checking', request.address);
+      if (pending !== request || request.phase !== 'checking' ||
+          request.cancellationRequested || request.terminal) return;
       if (!arm(request, PROBE_MS, () => unconfirmed(request))) {
         unconfirmed(request);
         return;
@@ -163,9 +167,13 @@
         timer: null, timerEpoch: 0, cancellationRequested: cancelling, terminal: cancelling };
       pending = request;
       publish(request.phase, address);
+      if (pending !== request || request.cancellationRequested !== cancelling ||
+          request.phase !== (cancelling ? 'native_closing' : 'checking')) return true;
       if (!arm(request, PROBE_MS, () => cancelling ? checkCancellation(request) : checkNative(request)))
         unconfirmed(request);
-      try { probe(token); } catch (_) { /* native gate remains locked */ }
+      if (pending === request) {
+        try { probe(token); } catch (_) { /* native gate remains locked */ }
+      }
       return true;
     }
     function matching(token) {
@@ -175,10 +183,11 @@
       if (!matching(token)) return false;
       if (pending.cancellationRequested) return false;
       if (pending.phase === 'transport' || pending.phase.startsWith('native_')) return true;
-      pending.phase = phase;
-      publish(phase, pending.address);
       const request = pending;
-      if (!arm(request, WAIT_MS, () => checkNative(request))) unconfirmed(request);
+      request.phase = phase;
+      publish(phase, request.address);
+      if (pending === request && request.phase === phase && !request.cancellationRequested &&
+          !arm(request, WAIT_MS, () => checkNative(request))) unconfirmed(request);
       return true;
     }
     function transport(token) {
@@ -202,6 +211,7 @@
           NATIVE_ORDER[stage] < NATIVE_ORDER[previous]) return false;
       request.phase = phase;
       publish(phase, request.address);
+      if (pending !== request || request.phase !== phase || request.cancellationRequested) return true;
       if (phase === 'native_active') clear(request);
       else if (!arm(request, WAIT_MS, () => checkNative(request))) unconfirmed(request);
       return true;
@@ -224,7 +234,9 @@
       const request = pending;
       request.phase = 'native_pending';
       publish('native_pending', request.address);
-      if (!arm(request, PROBE_MS, () => checkNative(request))) unconfirmed(request);
+      if (pending === request && request.phase === 'native_pending' &&
+          !request.cancellationRequested &&
+          !arm(request, PROBE_MS, () => checkNative(request))) unconfirmed(request);
       return true;
     }
     function terminating(token) {
@@ -235,7 +247,8 @@
       request.cancellationRequested = true;
       request.phase = 'native_closing';
       publish('native_closing', request.address);
-      if (!arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);
+      if (pending === request && request.phase === 'native_closing' &&
+          !arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);
       return true;
     }
     function requestCancel(dispatch) {
@@ -258,7 +271,8 @@
       }
       request.phase = 'cancel_requested';
       publish('cancel_requested', request.address);
-      if (!arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);
+      if (pending === request && request.phase === 'cancel_requested' &&
+          !arm(request, PROBE_MS, () => checkCancellation(request))) unconfirmed(request);
       return true;
     }
     return Object.freeze({
