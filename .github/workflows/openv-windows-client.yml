@@ -117,6 +117,10 @@ jobs:
           repository: bradjtrammell/openv-server
           ref: 7274c612ab0da01ba166737acb4f6fc48bbb5f39
           path: openv-server-source
+          # GITHUB_TOKEN is scoped to openv and cannot read a separate private
+          # repository. Supply a fine-grained read-only token scoped exclusively
+          # to openv-server; never persist it in the checked-out Git config.
+          token: ${{ secrets.OPENV_SERVER_READ_TOKEN }}
           persist-credentials: false
           submodules: false
       - name: Build and exercise real Windows native bridge DLL
