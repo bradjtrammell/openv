@@ -111,6 +111,31 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_stage_openv_native_bridge.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge staging tests failed' }
+      - name: Checkout pinned first-party native bridge source
+        uses: actions/checkout@v5
+        with:
+          repository: bradjtrammell/openv-server
+          ref: 7274c612ab0da01ba166737acb4f6fc48bbb5f39
+          path: openv-server-source
+          persist-credentials: false
+          submodules: false
+      - name: Build and exercise real Windows native bridge DLL
+        id: native_build
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '7274c612ab0da01ba166737acb4f6fc48bbb5f39'
+          $actual = (git -C openv-server-source rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Pinned native source commit mismatch' }
+          cmake -S openv-server-source/native -B openv-native-build -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'Native bridge CMake configuration failed' }
+          cmake --build openv-native-build --config Release --target openv_world_bridge
+          if ($LASTEXITCODE -ne 0) { throw 'Real native bridge DLL compilation failed' }
+          $dll = 'openv-native-build/Release/openv_world_bridge.dll'
+          if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw 'Compiled native bridge DLL missing' }
+          New-Item -ItemType Directory -Force -Path build-report | Out-Null
+          $expected | Set-Content -Encoding ascii build-report/native-bridge-source-commit.txt
       - name: Select installed Windows SDK
         shell: pwsh
         run: |
@@ -205,6 +230,15 @@ jobs:
           }
           python tools/stage_open_runtime.py --manifest $env:OPENV_RUNTIME_DEPENDENCIES_MANIFEST --runtime code/bin/five/release --report build-report/open-runtime-provenance.json
           if ($LASTEXITCODE -ne 0) { throw 'Owner-supplied Mono/FFmpeg staging failed' }
+      - name: Audit and stage compiled first-party native bridge
+        id: native_stage
+        if: steps.build.outcome == 'success' && steps.native_build.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 7274c612ab0da01ba166737acb4f6fc48bbb5f39 --report build-report/native-bridge-provenance.json
+          if ($LASTEXITCODE -ne 0) { throw 'Compiled native bridge PE/ABI staging failed' }
       - name: Collect build files and provenance
         if: always()
         run: |
@@ -273,7 +307,7 @@ jobs:
           $checks.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
       - name: Audit Windows runtime binaries, dependencies and UI
         id: runtime_audit
-        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.msvc.outcome == 'success' && steps.cef.outcome == 'success' && steps.open_deps.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.ui.outcome == 'success' && steps.msvc.outcome == 'success' && steps.cef.outcome == 'success' && steps.open_deps.outcome == 'success' && steps.native_stage.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -354,5 +388,5 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Enforce build result
-        if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.msvc.outcome != 'success' || steps.cef.outcome != 'success' || steps.open_deps.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
+        if: steps.build.outcome != 'success' || steps.ui.outcome != 'success' || steps.msvc.outcome != 'success' || steps.cef.outcome != 'success' || steps.open_deps.outcome != 'success' || steps.native_build.outcome != 'success' || steps.native_stage.outcome != 'success' || steps.runtime_audit.outcome != 'success' || steps.stage.outcome != 'success' || steps.stage_audit.outcome != 'success'
         run: throw 'OpenV Windows build failed; see the exact dependency annotations above, GitHub job summary and build-report/runtime-failure-summary.json. Gameplay remains unverified.'
