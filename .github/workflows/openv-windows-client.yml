@@ -130,8 +130,19 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Pinned native source commit mismatch' }
           cmake -S openv-server-source/native -B openv-native-build -A x64
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge CMake configuration failed' }
-          cmake --build openv-native-build --config Release --target openv_world_bridge
-          if ($LASTEXITCODE -ne 0) { throw 'Real native bridge DLL compilation failed' }
+          # Build the native test consumers as well as the distributable DLL.
+          # A DLL compiling successfully does not prove that its exported ABI
+          # can be loaded or that the authority/resource integration works.
+          cmake --build openv-native-build --config Release --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw 'Native bridge and test consumer compilation failed' }
+          ctest --test-dir openv-native-build -C Release --output-on-failure --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw 'Native bridge CTest regression suite failed' }
+          # Explicitly execute the distributable DLL preflight, not merely
+          # its mock-based Python packaging tests.
+          $checker = 'openv-native-build/Release/openv_native_check.exe'
+          if (-not (Test-Path -LiteralPath $checker -PathType Leaf)) { throw 'Native DLL runtime checker missing' }
+          & $checker --check
+          if ($LASTEXITCODE -ne 0) { throw 'Native DLL runtime preflight failed' }
           $dll = 'openv-native-build/Release/openv_world_bridge.dll'
           if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw 'Compiled native bridge DLL missing' }
           New-Item -ItemType Directory -Force -Path build-report | Out-Null
