@@ -59,9 +59,13 @@ jobs:
           Write-Host 'Windows toolchain inventory'
           $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
           if (-not (Test-Path $vswhere)) { throw 'Visual Studio discovery tool not found' }
-          $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw 'Visual Studio MSBuild workload not found' }
-          if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) { throw "Discovered MSBuild does not exist: $msbuild" }
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath | Select-Object -First 1
+          if (-not $installation) { throw 'Visual Studio MSBuild workload not found' }
+          $installation = $installation.Trim()
+          if (-not (Test-Path -LiteralPath $installation -PathType Container)) { throw "Visual Studio installation missing: $installation" }
+          $msbuild = Join-Path $installation 'MSBuild\Current\Bin\MSBuild.exe'
+          if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) { throw "MSBuild missing from selected installation: $msbuild" }
+          "OPENV_VS_INSTALLATION=$installation" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "OPENV_MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "MSBuild: $msbuild"
           where.exe node
@@ -165,10 +169,13 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path build-report | Out-Null
-          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-          $installation = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
-          if (-not $installation) { throw 'Visual Studio installation not found for VC143 redistributable' }
+          # Stage VC143 from the same validated installation as MSBuild.
+          $installation = $env:OPENV_VS_INSTALLATION
+          if (-not $installation -or -not (Test-Path -LiteralPath $installation -PathType Container)) {
+            throw 'Validated Visual Studio installation unavailable for VC143 staging'
+          }
           $redist = Join-Path $installation 'VC\Redist\MSVC'
+          if (-not (Test-Path -LiteralPath $redist -PathType Container)) { throw "VC redistributable directory missing: $redist" }
           python tools/stage_msvc_runtime.py --redist-root $redist --runtime code/bin/five/release --report build-report/msvc-runtime-provenance.json
           if ($LASTEXITCODE -ne 0) { throw 'Installed Microsoft-signed VC143 x64 runtime staging failed' }
       - name: Stage pinned, existing CEF runtime and license
