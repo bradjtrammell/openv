@@ -129,9 +129,15 @@ jobs:
           pwsh ./fxd.ps1 get-chrome
           ./prebuild.cmd
           pwsh ./fxd.ps1 gen -game five
-          MSBUILD="/c/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Current/Bin/MSBuild.exe"
-          [[ -f "$MSBUILD" ]] || MSBUILD="/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe"
-          [[ -f "$MSBUILD" ]] || { echo "Could not locate MSBuild"; exit 1; }
+          # Resolve the same installed MSBuild discovered during toolchain validation.
+          # Hosted images can use Enterprise, Professional, Community or Build Tools.
+          VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          [[ -f "$VSWHERE" ]] || { echo "Visual Studio discovery tool unavailable"; exit 1; }
+          MSBUILD_WIN="$("$VSWHERE" -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\\**\\Bin\\MSBuild.exe' | tr -d '\r' | head -n 1)"
+          [[ -n "$MSBUILD_WIN" ]] || { echo "No installed MSBuild matching the required workload"; exit 1; }
+          MSBUILD="$(cygpath -u "$MSBUILD_WIN")"
+          [[ -f "$MSBUILD" ]] || { echo "Discovered MSBuild is missing: $MSBUILD_WIN"; exit 1; }
+          echo "Using MSBuild: $MSBUILD_WIN"
           cd code/build/five
           "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
       - name: Build and stage first-party OpenV UI
