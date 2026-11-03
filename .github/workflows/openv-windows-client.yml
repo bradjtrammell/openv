@@ -61,6 +61,8 @@ jobs:
           if (-not (Test-Path $vswhere)) { throw 'Visual Studio discovery tool not found' }
           $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw 'Visual Studio MSBuild workload not found' }
+          if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) { throw "Discovered MSBuild does not exist: $msbuild" }
+          "OPENV_MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "MSBuild: $msbuild"
           where.exe node
           where.exe python
@@ -129,15 +131,13 @@ jobs:
           pwsh ./fxd.ps1 get-chrome
           ./prebuild.cmd
           pwsh ./fxd.ps1 gen -game five
-          # Resolve the same installed MSBuild discovered during toolchain validation.
-          # Hosted images can use Enterprise, Professional, Community or Build Tools.
-          VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
-          [[ -f "$VSWHERE" ]] || { echo "Visual Studio discovery tool unavailable"; exit 1; }
-          MSBUILD_WIN="$("$VSWHERE" -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\\**\\Bin\\MSBuild.exe' | tr -d '\r' | head -n 1)"
-          [[ -n "$MSBUILD_WIN" ]] || { echo "No installed MSBuild matching the required workload"; exit 1; }
-          MSBUILD="$(cygpath -u "$MSBUILD_WIN")"
-          [[ -f "$MSBUILD" ]] || { echo "Discovered MSBuild is missing: $MSBUILD_WIN"; exit 1; }
-          echo "Using MSBuild: $MSBUILD_WIN"
+          # Use the exact executable selected by the PowerShell toolchain check.
+          # Re-running vswhere here can select a different instance or misparse
+          # its Windows path under Git Bash.
+          [[ -n "${OPENV_MSBUILD_PATH:-}" ]] || { echo "MSBuild discovery output missing"; exit 1; }
+          MSBUILD="$(cygpath -u "$OPENV_MSBUILD_PATH")"
+          [[ -f "$MSBUILD" ]] || { echo "Discovered MSBuild is missing: $OPENV_MSBUILD_PATH"; exit 1; }
+          echo "Using MSBuild: $OPENV_MSBUILD_PATH"
           cd code/build/five
           "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
       - name: Build and stage first-party OpenV UI
