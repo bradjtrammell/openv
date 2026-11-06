@@ -131,6 +131,9 @@ jobs:
       - name: Checkout pinned first-party native bridge source
         id: native_checkout
         if: env.OPENV_NATIVE_SOURCE_AVAILABLE == 'true'
+        # An expired or insufficiently scoped token must not prevent independent
+        # client/UI compilation and diagnostic artifact collection.
+        continue-on-error: true
         uses: actions/checkout@v5
         with:
           repository: bradjtrammell/openv-server
@@ -142,6 +145,20 @@ jobs:
           token: ${{ secrets.OPENV_SERVER_READ_TOKEN }}
           persist-credentials: false
           submodules: false
+      - name: Record native checkout result
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path build-report | Out-Null
+          $outcome = '${{ steps.native_checkout.outcome }}'
+          $conclusion = '${{ steps.native_checkout.conclusion }}'
+          $status = if ($outcome -eq 'success') { 'checkout_succeeded' } elseif ($outcome -eq 'failure') { 'checkout_failed' } else { 'checkout_skipped' }
+          @{ status=$status; checkout_outcome=$outcome; checkout_conclusion=$conclusion; source_repository='bradjtrammell/openv-server'; gameplay_verified=$false } |
+            ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 build-report/native-source-access.json
+          if ($outcome -eq 'failure') {
+            Write-Warning 'Private native source checkout failed. Check token validity and read permission; independent client diagnostics will continue. Final build remains failed.'
+          }
       - name: Build and exercise real Windows native bridge DLL
         id: native_build
         if: steps.native_checkout.outcome == 'success'
