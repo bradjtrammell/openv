@@ -115,7 +115,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: bradjtrammell/openv-server
-          ref: 6b7cefd35f8242a4c4c2ccd4164a237e28db4613
+          ref: 3a3e80cb1db7936e2a047d809837a886e0113be8
           path: openv-server-source
           # GITHUB_TOKEN is scoped to openv and cannot read a separate private
           # repository. Supply a fine-grained read-only token scoped exclusively
@@ -129,7 +129,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = '6b7cefd35f8242a4c4c2ccd4164a237e28db4613'
+          $expected = '3a3e80cb1db7936e2a047d809837a886e0113be8'
           $actual = (git -C openv-server-source rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Pinned native source commit mismatch' }
           cmake -S openv-server-source/native -B openv-native-build -A x64
@@ -252,7 +252,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 6b7cefd35f8242a4c4c2ccd4164a237e28db4613 --report build-report/native-bridge-provenance.json
+          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 3a3e80cb1db7936e2a047d809837a886e0113be8 --report build-report/native-bridge-provenance.json
           if ($LASTEXITCODE -ne 0) { throw 'Compiled native bridge PE/ABI staging failed' }
       - name: Collect build files and provenance
         if: always()
