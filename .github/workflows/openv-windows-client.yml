@@ -120,11 +120,20 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_stage_openv_native_bridge.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge staging tests failed' }
+      - name: Validate private native source access
+        shell: pwsh
+        env:
+          OPENV_SERVER_READ_TOKEN: ${{ secrets.OPENV_SERVER_READ_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:OPENV_SERVER_READ_TOKEN)) {
+            throw 'OPENV_SERVER_READ_TOKEN is required: configure a fine-grained read-only token scoped to bradjtrammell/openv-server before running this Windows integration workflow.'
+          }
+          Write-Host 'Private native source credential is configured (value withheld).'
       - name: Checkout pinned first-party native bridge source
         uses: actions/checkout@v5
         with:
           repository: bradjtrammell/openv-server
-          ref: 3a3e80cb1db7936e2a047d809837a886e0113be8
+          ref: 24f8c8de1d3b1c92680d701c5eb7bbdaf05af2ee
           path: openv-server-source
           # GITHUB_TOKEN is scoped to openv and cannot read a separate private
           # repository. Supply a fine-grained read-only token scoped exclusively
@@ -138,7 +147,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = '3a3e80cb1db7936e2a047d809837a886e0113be8'
+          $expected = '24f8c8de1d3b1c92680d701c5eb7bbdaf05af2ee'
           $actual = (git -C openv-server-source rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Pinned native source commit mismatch' }
           cmake -S openv-server-source/native -B openv-native-build -A x64
@@ -261,7 +270,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 3a3e80cb1db7936e2a047d809837a886e0113be8 --report build-report/native-bridge-provenance.json
+          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 24f8c8de1d3b1c92680d701c5eb7bbdaf05af2ee --report build-report/native-bridge-provenance.json
           if ($LASTEXITCODE -ne 0) { throw 'Compiled native bridge PE/ABI staging failed' }
       - name: Collect build files and provenance
         if: always()
