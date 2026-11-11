@@ -120,6 +120,39 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_stage_openv_native_bridge.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge staging tests failed' }
+      - name: Select installed Windows SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Include'
+          if (-not (Test-Path $sdkRoot)) { throw 'Windows SDK include directory unavailable' }
+          $sdk = Get-ChildItem $sdkRoot -Directory |
+            Where-Object { (Test-Path (Join-Path $_.FullName 'um\Windows.h')) -and ($_.Name -match '^10[.]0[.][0-9]+[.]0$') } |
+            Sort-Object { [version]$_.Name } -Descending |
+            Select-Object -First 1
+          if (-not $sdk) { throw 'No usable Windows SDK found' }
+          "WINDOWS_SDK_VERSION=$($sdk.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Using Windows SDK: $($sdk.Name)"
+      - name: Build client using documented toolchain
+        id: build
+        continue-on-error: true
+        shell: bash
+        env:
+          PROGRAM: five
+        run: |
+          set -euo pipefail
+          pwsh ./fxd.ps1 get-chrome
+          ./prebuild.cmd
+          pwsh ./fxd.ps1 gen -game five
+          # Use the exact executable selected by the PowerShell toolchain check.
+          # Re-running vswhere here can select a different instance or misparse
+          # its Windows path under Git Bash.
+          [[ -n "${OPENV_MSBUILD_PATH:-}" ]] || { echo "MSBuild discovery output missing"; exit 1; }
+          MSBUILD="$(cygpath -u "$OPENV_MSBUILD_PATH")"
+          [[ -f "$MSBUILD" ]] || { echo "Discovered MSBuild is missing: $OPENV_MSBUILD_PATH"; exit 1; }
+          echo "Using MSBuild: $OPENV_MSBUILD_PATH"
+          cd code/build/five
+          "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
       - name: Validate private native source access
         shell: pwsh
         env:
@@ -169,39 +202,6 @@ jobs:
           if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw 'Compiled native bridge DLL missing' }
           New-Item -ItemType Directory -Force -Path build-report | Out-Null
           $expected | Set-Content -Encoding ascii build-report/native-bridge-source-commit.txt
-      - name: Select installed Windows SDK
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Include'
-          if (-not (Test-Path $sdkRoot)) { throw 'Windows SDK include directory unavailable' }
-          $sdk = Get-ChildItem $sdkRoot -Directory |
-            Where-Object { (Test-Path (Join-Path $_.FullName 'um\Windows.h')) -and ($_.Name -match '^10[.]0[.][0-9]+[.]0$') } |
-            Sort-Object { [version]$_.Name } -Descending |
-            Select-Object -First 1
-          if (-not $sdk) { throw 'No usable Windows SDK found' }
-          "WINDOWS_SDK_VERSION=$($sdk.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Using Windows SDK: $($sdk.Name)"
-      - name: Build client using documented toolchain
-        id: build
-        continue-on-error: true
-        shell: bash
-        env:
-          PROGRAM: five
-        run: |
-          set -euo pipefail
-          pwsh ./fxd.ps1 get-chrome
-          ./prebuild.cmd
-          pwsh ./fxd.ps1 gen -game five
-          # Use the exact executable selected by the PowerShell toolchain check.
-          # Re-running vswhere here can select a different instance or misparse
-          # its Windows path under Git Bash.
-          [[ -n "${OPENV_MSBUILD_PATH:-}" ]] || { echo "MSBuild discovery output missing"; exit 1; }
-          MSBUILD="$(cygpath -u "$OPENV_MSBUILD_PATH")"
-          [[ -f "$MSBUILD" ]] || { echo "Discovered MSBuild is missing: $OPENV_MSBUILD_PATH"; exit 1; }
-          echo "Using MSBuild: $OPENV_MSBUILD_PATH"
-          cd code/build/five
-          "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
       - name: Build and stage first-party OpenV UI
         id: ui
         if: steps.build.outcome == 'success'
