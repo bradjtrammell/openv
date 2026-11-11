@@ -1,6 +1,15 @@
 name: OpenV Windows client build (experimental)
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/openv-windows-client.yml'
+      - 'code/components/gta-net-five/include/OpenVAuthorityGame.h'
+      - 'code/components/gta-net-five/src/OpenVAuthorityGame.cpp'
+      - 'tools/**'
+      - 'tests/**'
+      - 'ext/ui-build/**'
   push:
     branches: [master]
     paths:
@@ -111,46 +120,6 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_stage_openv_native_bridge.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge staging tests failed' }
-      - name: Checkout pinned first-party native bridge source
-        uses: actions/checkout@v5
-        with:
-          repository: bradjtrammell/openv-server
-          ref: 6b7cefd35f8242a4c4c2ccd4164a237e28db4613
-          path: openv-server-source
-          # GITHUB_TOKEN is scoped to openv and cannot read a separate private
-          # repository. Supply a fine-grained read-only token scoped exclusively
-          # to openv-server; never persist it in the checked-out Git config.
-          token: ${{ secrets.OPENV_SERVER_READ_TOKEN }}
-          persist-credentials: false
-          submodules: false
-      - name: Build and exercise real Windows native bridge DLL
-        id: native_build
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $expected = '6b7cefd35f8242a4c4c2ccd4164a237e28db4613'
-          $actual = (git -C openv-server-source rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Pinned native source commit mismatch' }
-          cmake -S openv-server-source/native -B openv-native-build -A x64
-          if ($LASTEXITCODE -ne 0) { throw 'Native bridge CMake configuration failed' }
-          # Build the native test consumers as well as the distributable DLL.
-          # A DLL compiling successfully does not prove that its exported ABI
-          # can be loaded or that the authority/resource integration works.
-          cmake --build openv-native-build --config Release --parallel 4
-          if ($LASTEXITCODE -ne 0) { throw 'Native bridge and test consumer compilation failed' }
-          ctest --test-dir openv-native-build -C Release --output-on-failure --parallel 4
-          if ($LASTEXITCODE -ne 0) { throw 'Native bridge CTest regression suite failed' }
-          # Explicitly execute the distributable DLL preflight, not merely
-          # its mock-based Python packaging tests.
-          $checker = 'openv-native-build/Release/openv_native_check.exe'
-          if (-not (Test-Path -LiteralPath $checker -PathType Leaf)) { throw 'Native DLL runtime checker missing' }
-          & $checker --check
-          if ($LASTEXITCODE -ne 0) { throw 'Native DLL runtime preflight failed' }
-          $dll = 'openv-native-build/Release/openv_world_bridge.dll'
-          if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw 'Compiled native bridge DLL missing' }
-          New-Item -ItemType Directory -Force -Path build-report | Out-Null
-          $expected | Set-Content -Encoding ascii build-report/native-bridge-source-commit.txt
       - name: Select installed Windows SDK
         shell: pwsh
         run: |
@@ -184,6 +153,58 @@ jobs:
           echo "Using MSBuild: $OPENV_MSBUILD_PATH"
           cd code/build/five
           "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
+      - name: Validate private native source access
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        env:
+          OPENV_SERVER_READ_TOKEN: ${{ secrets.OPENV_SERVER_READ_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:OPENV_SERVER_READ_TOKEN)) {
+            throw 'OPENV_SERVER_READ_TOKEN is required: configure a fine-grained read-only token scoped to bradjtrammell/openv-server before running this Windows integration workflow.'
+          }
+          Write-Host 'Private native source credential is configured (value withheld).'
+      - name: Checkout pinned first-party native bridge source
+        if: steps.build.outcome == 'success'
+        uses: actions/checkout@v5
+        with:
+          repository: bradjtrammell/openv-server
+          ref: 22614fee064e695158880b5355d03f12ae603433
+          path: openv-server-source
+          # GITHUB_TOKEN is scoped to openv and cannot read a separate private
+          # repository. Supply a fine-grained read-only token scoped exclusively
+          # to openv-server; never persist it in the checked-out Git config.
+          token: ${{ secrets.OPENV_SERVER_READ_TOKEN }}
+          persist-credentials: false
+          submodules: false
+      - name: Build and exercise real Windows native bridge DLL
+        if: steps.build.outcome == 'success'
+        id: native_build
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '22614fee064e695158880b5355d03f12ae603433'
+          $actual = (git -C openv-server-source rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Pinned native source commit mismatch' }
+          cmake -S openv-server-source/native -B openv-native-build -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'Native bridge CMake configuration failed' }
+          # Build the native test consumers as well as the distributable DLL.
+          # A DLL compiling successfully does not prove that its exported ABI
+          # can be loaded or that the authority/resource integration works.
+          cmake --build openv-native-build --config Release --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw 'Native bridge and test consumer compilation failed' }
+          ctest --test-dir openv-native-build -C Release --output-on-failure --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw 'Native bridge CTest regression suite failed' }
+          # Explicitly execute the distributable DLL preflight, not merely
+          # its mock-based Python packaging tests.
+          $checker = 'openv-native-build/Release/openv_native_check.exe'
+          if (-not (Test-Path -LiteralPath $checker -PathType Leaf)) { throw 'Native DLL runtime checker missing' }
+          & $checker --check
+          if ($LASTEXITCODE -ne 0) { throw 'Native DLL runtime preflight failed' }
+          $dll = 'openv-native-build/Release/openv_world_bridge.dll'
+          if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw 'Compiled native bridge DLL missing' }
+          New-Item -ItemType Directory -Force -Path build-report | Out-Null
+          $expected | Set-Content -Encoding ascii build-report/native-bridge-source-commit.txt
       - name: Build and stage first-party OpenV UI
         id: ui
         if: steps.build.outcome == 'success'
@@ -252,7 +273,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 6b7cefd35f8242a4c4c2ccd4164a237e28db4613 --report build-report/native-bridge-provenance.json
+          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 22614fee064e695158880b5355d03f12ae603433 --report build-report/native-bridge-provenance.json
           if ($LASTEXITCODE -ne 0) { throw 'Compiled native bridge PE/ABI staging failed' }
       - name: Collect build files and provenance
         if: always()
