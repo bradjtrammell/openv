@@ -154,6 +154,7 @@ jobs:
           cd code/build/five
           "$MSBUILD" CitizenMP.sln -t:build -restore -p:RestorePackagesConfig=true -p:preferredtoolarchitecture=x64 -p:configuration=release -p:WindowsTargetPlatformVersion=$WINDOWS_SDK_VERSION -maxcpucount:4 -v:minimal -fl1 '-flp1:logfile=client-msbuild.log;errorsonly'
       - name: Validate private native source access
+        if: steps.build.outcome == 'success'
         shell: pwsh
         env:
           OPENV_SERVER_READ_TOKEN: ${{ secrets.OPENV_SERVER_READ_TOKEN }}
@@ -163,6 +164,7 @@ jobs:
           }
           Write-Host 'Private native source credential is configured (value withheld).'
       - name: Checkout pinned first-party native bridge source
+        if: steps.build.outcome == 'success'
         uses: actions/checkout@v5
         with:
           repository: bradjtrammell/openv-server
@@ -175,6 +177,7 @@ jobs:
           persist-credentials: false
           submodules: false
       - name: Build and exercise real Windows native bridge DLL
+        if: steps.build.outcome == 'success'
         id: native_build
         continue-on-error: true
         shell: pwsh
