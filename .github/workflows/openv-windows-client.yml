@@ -125,7 +125,7 @@ jobs:
           submodules: false
       - name: Build and exercise real Windows native bridge DLL
         id: native_build
-        continue-on-error: true
+        continue-on-error: false
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -166,7 +166,7 @@ jobs:
           Write-Host "Using Windows SDK: $($sdk.Name)"
       - name: Build client using documented toolchain
         id: build
-        continue-on-error: true
+        continue-on-error: false
         shell: bash
         env:
           PROGRAM: five
