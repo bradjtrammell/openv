@@ -276,18 +276,33 @@ bool apply_transform(int handle, const openv_authority_entity& e) {
         FxNativeInvoke::Invoke<void>(position, handle, float(e.x), float(e.y),
             float(e.z), false, false, false);
         FxNativeInvoke::Invoke<void>(heading, handle, float(e.heading));
-        return true;
+        // Native dispatch returning normally does not prove that GTA accepted
+        // the transform. Do not ACK movement until the actual engine state
+        // agrees with the authoritative snapshot. GTA coordinates are floats,
+        // so tolerate sub-unit rounding and wrap heading at north (0/360).
+        openv_authority_position observed{};
+        if (read_position(handle, observed)) {
+            const double dx = observed.x - e.x;
+            const double dy = observed.y - e.y;
+            const double dz = observed.z - e.z;
+            const double heading_delta = std::fmod(
+                std::abs(observed.heading - e.heading), 360.0);
+            if (dx * dx + dy * dy + dz * dz <= 0.25 &&
+                std::min(heading_delta, 360.0 - heading_delta) <= 1.0)
+                return true;
+        }
     } catch (...) {
-        // Best-effort compensation if a native fails between the two writes.
-        // If the game refuses rollback, the authority pump will withdraw the
-        // session and retry entity cleanup instead of ACKing this frame.
-        try {
-            FxNativeInvoke::Invoke<void>(position, handle, float(before.x),
-                float(before.y), float(before.z), false, false, false);
-            FxNativeInvoke::Invoke<void>(heading, handle, float(before.heading));
-        } catch (...) {}
-        return false;
+        // A native failure is treated exactly like a rejected transform.
     }
+    // Best-effort compensation on exception, rejected movement or unreadable
+    // readback. Never acknowledge the snapshot after a failed verification.
+    // If rollback also fails, the authority pump must revoke and clean up.
+    try {
+        FxNativeInvoke::Invoke<void>(position, handle, float(before.x),
+            float(before.y), float(before.z), false, false, false);
+        FxNativeInvoke::Invoke<void>(heading, handle, float(before.heading));
+    } catch (...) {}
+    return false;
 }
 
 bool model_ready(uint32_t kind, uint32_t model) {
