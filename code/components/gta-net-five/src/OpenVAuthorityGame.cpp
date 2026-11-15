@@ -570,11 +570,22 @@ extern "C" int OpenVGameAuthoritySpawn(
             float(e->y), float(e->z), float(e->heading), false, false);
     }
     release_model(model);
-    const bool created_live = created > 0 && exists(created);
+    // A failed DOES_ENTITY_EXIST invocation is not evidence that CREATE_*
+    // allocated nothing. Retain any positive, unverified handle for a later
+    // cleanup attempt instead of losing the only reference to it.
+    bool created_live = false;
+    const bool existence_known = probe_entity_existence(created, created_live);
     // A native returning a pre-existing handle did not allocate a new
     // entity for this server ID. Do not mission-own, freeze or delete it.
-    if (created_live && reserved_engine_handle(created)) {
+    // Check even when the existence probe failed: a collision is unsafe
+    // regardless of whether GTA currently reports the handle as live.
+    if (created > 0 && reserved_engine_handle(created)) {
         entities.erase(entry);
+        return 0;
+    }
+    if (created > 0 && !existence_known) {
+        entry->second.handle = created;
+        entry->second.pending_cleanup = true;
         return 0;
     }
     // GTA must retain authority-owned proxies across normal world cleanup.
@@ -646,16 +657,21 @@ static bool sample_local_avatar(openv_authority_position* position) {
     // vehicle rotates; reporting it makes remote motion and proximity drift.
     // false explicitly excludes the last vehicle after the ped exits.
     int current_vehicle = 0;
-    if (native_result(GET_VEHICLE_PED_IS_IN, current_vehicle, ped, false) &&
-        current_vehicle > 0 && exists(current_vehicle)) {
-        openv_authority_position vehicle_sample{};
-        if (read_position(current_vehicle, vehicle_sample)) {
+    if (!native_result(GET_VEHICLE_PED_IS_IN, current_vehicle, ped, false))
+        return false;
+    if (current_vehicle > 0) {
+        bool vehicle_present = false;
+        if (!probe_entity_existence(current_vehicle, vehicle_present))
+            return false;
+        if (vehicle_present) {
+            openv_authority_position vehicle_sample{};
+            if (!read_position(current_vehicle, vehicle_sample))
+                return false;
             *position = vehicle_sample;
             return true;
         }
-        // A live vehicle with an unreadable transform is not a valid
-        // position sample; never substitute the occupant's potentially
-        // inconsistent seat transform in the middle of vehicle movement.
+        // A positive but absent vehicle handle is an inconsistent engine
+        // snapshot; never silently report the ped as a walking player.
         return false;
     }
     openv_authority_position sample{};
