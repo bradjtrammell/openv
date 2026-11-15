@@ -388,8 +388,22 @@ bool reserved_engine_handle(int handle) {
 // GTA may delete and recycle an engine handle independently of the numeric
 // server entity. Never delete an unrelated replacement entity. If model
 // lookup fails, retain ownership for retry rather than guessing.
+// A recycled native handle can now identify the local player's ped or their
+// occupied vehicle, sometimes with the same model as the former replica.
+// Treat uncertain local identity as unsafe: never mutate or delete it.
+bool local_avatar_handle_or_unknown(int handle) {
+    int ped = 0;
+    if (!native_result(PLAYER_PED_ID, ped) || ped <= 0) return true;
+    if (handle == ped) return true;
+    int vehicle = 0;
+    if (!native_result(GET_VEHICLE_PED_IS_IN, vehicle, ped, false))
+        return true;
+    return vehicle > 0 && handle == vehicle;
+}
+
 bool remove_entity(int handle, uint32_t model) {
     if (!exists(handle)) return true;
+    if (local_avatar_handle_or_unknown(handle)) return false;
     uint32_t current = 0;
     if (!native_result(GET_ENTITY_MODEL, current, handle)) return false;
     if (current != model) return true; // original GTA entity is already gone
@@ -583,7 +597,8 @@ extern "C" int OpenVGameAuthorityMove(
     const auto it = entities.find(e->id);
     if (it == entities.end() || !matching(it->second, handle, *e) ||
         e->sequence < it->second.sequence ||
-        !same_engine_model(it->second.handle, it->second.model))
+        !same_engine_model(it->second.handle, it->second.model) ||
+        local_avatar_handle_or_unknown(it->second.handle))
         return 0;
     if (!apply_transform(it->second.handle, *e)) return 0;
     it->second.sequence = e->sequence;
