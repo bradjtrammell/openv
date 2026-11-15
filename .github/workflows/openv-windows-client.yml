@@ -139,7 +139,13 @@ jobs:
           # can be loaded or that the authority/resource integration works.
           cmake --build openv-native-build --config Release --parallel 4
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge and test consumer compilation failed' }
-          # Fail if CMake silently registers no native integration tests.\n          $inventory = & ctest --test-dir openv-native-build -C Release --show-only=json-v1\n          if ($LASTEXITCODE -ne 0) { throw 'Native CTest discovery failed' }\n          $discovered = (($inventory -join "`n") | ConvertFrom-Json).tests\n          if (-not $discovered -or @($discovered).Count -lt 5) { throw 'Native bridge integration test inventory unexpectedly empty or incomplete' }\n          Write-Host "Discovered $(@($discovered).Count) native CTest cases"\n          ctest --test-dir openv-native-build -C Release --output-on-failure --parallel 4
+          # Fail if CMake silently registers no native integration tests.
+          $inventory = & ctest --test-dir openv-native-build -C Release --show-only=json-v1
+          if ($LASTEXITCODE -ne 0) { throw 'Native CTest discovery failed' }
+          $discovered = (($inventory -join "`n") | ConvertFrom-Json).tests
+          if (-not $discovered -or @($discovered).Count -lt 5) { throw 'Native bridge integration test inventory unexpectedly empty or incomplete' }
+          Write-Host "Discovered $(@($discovered).Count) native CTest cases"
+          ctest --test-dir openv-native-build -C Release --output-on-failure --parallel 4
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge CTest regression suite failed' }
           # Explicitly execute the distributable DLL preflight, not merely
           # its mock-based Python packaging tests.
