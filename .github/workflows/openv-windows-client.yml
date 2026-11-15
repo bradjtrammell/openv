@@ -115,7 +115,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: bradjtrammell/openv-server
-          ref: 53e5d20799674daabe01c307cbbca174104daf96
+          ref: f1cd1d5d1cdfb1da15506e3ee5cff3dd0aeb78b7
           path: openv-server-source
           # GITHUB_TOKEN is scoped to openv and cannot read a separate private
           # repository. Supply a fine-grained read-only token scoped exclusively
@@ -129,7 +129,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = '53e5d20799674daabe01c307cbbca174104daf96'
+          $expected = 'f1cd1d5d1cdfb1da15506e3ee5cff3dd0aeb78b7'
           $actual = (git -C openv-server-source rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Pinned native source commit mismatch' }
           cmake -S openv-server-source/native -B openv-native-build -A x64
@@ -139,7 +139,7 @@ jobs:
           # can be loaded or that the authority/resource integration works.
           cmake --build openv-native-build --config Release --parallel 4
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge and test consumer compilation failed' }
-          ctest --test-dir openv-native-build -C Release --output-on-failure --parallel 4
+          # Fail if CMake silently registers no native integration tests.\n          $inventory = & ctest --test-dir openv-native-build -C Release --show-only=json-v1\n          if ($LASTEXITCODE -ne 0) { throw 'Native CTest discovery failed' }\n          $discovered = ($inventory | ConvertFrom-Json).tests\n          if (-not $discovered -or @($discovered).Count -lt 5) { throw 'Native bridge integration test inventory unexpectedly empty or incomplete' }\n          Write-Host "Discovered $(@($discovered).Count) native CTest cases"\n          ctest --test-dir openv-native-build -C Release --output-on-failure --parallel 4
           if ($LASTEXITCODE -ne 0) { throw 'Native bridge CTest regression suite failed' }
           # Explicitly execute the distributable DLL preflight, not merely
           # its mock-based Python packaging tests.
@@ -252,7 +252,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit 53e5d20799674daabe01c307cbbca174104daf96 --report build-report/native-bridge-provenance.json
+          python tools/stage_openv_native_bridge.py --source openv-native-build/Release/openv_world_bridge.dll --runtime code/bin/five/release --audit-module openv-server-source/tools/windows_binary_audit.py --source-commit f1cd1d5d1cdfb1da15506e3ee5cff3dd0aeb78b7 --report build-report/native-bridge-provenance.json
           if ($LASTEXITCODE -ne 0) { throw 'Compiled native bridge PE/ABI staging failed' }
       - name: Collect build files and provenance
         if: always()
