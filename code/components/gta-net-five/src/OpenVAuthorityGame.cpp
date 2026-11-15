@@ -401,8 +401,18 @@ bool local_avatar_handle_or_unknown(int handle) {
     return vehicle > 0 && handle == vehicle;
 }
 
+// Distinguish an engine-confirmed absent handle from a failed existence
+// query. A failed native invocation must never count as successful cleanup.
+bool probe_entity_existence(int handle, bool& present) {
+    present = false;
+    if (handle <= 0) return true;
+    return native_result(DOES_ENTITY_EXIST, present, handle);
+}
+
 bool remove_entity(int handle, uint32_t model) {
-    if (!exists(handle)) return true;
+    bool present = false;
+    if (!probe_entity_existence(handle, present)) return false;
+    if (!present) return true;
     if (local_avatar_handle_or_unknown(handle)) return false;
     uint32_t current = 0;
     if (!native_result(GET_ENTITY_MODEL, current, handle)) return false;
@@ -411,7 +421,9 @@ bool remove_entity(int handle, uint32_t model) {
         return false;
     int to_delete = handle;
     if (!native_void(DELETE_ENTITY, &to_delete)) return false;
-    return !exists(handle);
+    // A failed post-delete existence query is not proof of deletion.
+    if (!probe_entity_existence(handle, present)) return false;
+    return !present;
 }
 
 bool cleanup_unacknowledged() {
