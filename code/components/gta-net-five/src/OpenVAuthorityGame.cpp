@@ -265,6 +265,20 @@ bool read_position(int handle, openv_authority_position& out) {
     } catch (...) { return false; }
 }
 
+// Read back a native transform before acknowledging server authority.
+// GTA stores positions and headings as floats; compare circular headings.
+bool transform_matches(int handle, const openv_authority_entity& e) {
+    openv_authority_position observed{};
+    if (!read_position(handle, observed)) return false;
+    const double dx = observed.x - e.x;
+    const double dy = observed.y - e.y;
+    const double dz = observed.z - e.z;
+    const double heading_delta = std::fmod(
+        std::abs(observed.heading - e.heading), 360.0);
+    return dx * dx + dy * dy + dz * dz <= 0.25 &&
+        std::min(heading_delta, 360.0 - heading_delta) <= 1.0;
+}
+
 bool apply_transform(int handle, const openv_authority_entity& e) {
     if (!exists(handle)) return false;
     const auto position = fx::ScriptEngine::GetNativeHandler(SET_ENTITY_COORDS_NO_OFFSET);
@@ -280,17 +294,7 @@ bool apply_transform(int handle, const openv_authority_entity& e) {
         // the transform. Do not ACK movement until the actual engine state
         // agrees with the authoritative snapshot. GTA coordinates are floats,
         // so tolerate sub-unit rounding and wrap heading at north (0/360).
-        openv_authority_position observed{};
-        if (read_position(handle, observed)) {
-            const double dx = observed.x - e.x;
-            const double dy = observed.y - e.y;
-            const double dz = observed.z - e.z;
-            const double heading_delta = std::fmod(
-                std::abs(observed.heading - e.heading), 360.0);
-            if (dx * dx + dy * dy + dz * dz <= 0.25 &&
-                std::min(heading_delta, 360.0 - heading_delta) <= 1.0)
-                return true;
-        }
+        if (transform_matches(handle, e)) return true;
     } catch (...) {
         // A native failure is treated exactly like a rejected transform.
     }
@@ -555,7 +559,8 @@ extern "C" int OpenVGameAuthoritySpawn(
     // before its handle is exposed to the authoritative replication pump.
     const bool replica_ready = mission_owned &&
         same_engine_model(created, model) &&
-        configure_remote_replica(created, e->kind);
+        configure_remote_replica(created, e->kind) &&
+        transform_matches(created, *e);
     if (!replica_ready) {
         if (created_live) {
             entry->second.handle = created;
